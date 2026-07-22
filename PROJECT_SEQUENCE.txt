@@ -4,7 +4,7 @@ PROJECT CONTINUITY BRIEF — Agentic Orchestration of DC Motor Control
 Purpose: Hand this file to a new chat if the current conversation runs out of
 context/tokens. It captures decisions, current state, and the planned sequence.
 
-Last updated: 2026-07-22 (revised: sim-only + SaaS research/product framing)
+Last updated: 2026-07-22 (repo purge: notebooks removed; examples/ + saas/ canonical)
 Repo: https://github.com/abbasi07/agentic-dc-motor-control
 Local path: E:\Agentic AI Course\Projects\1_Agentic_Orchestration_of_DC_Motor_Control
 
@@ -71,7 +71,7 @@ alone does NOT justify an LLM.
 
 P1 — Spec-to-Design Loop (NL -> formal requirements)
   Input: natural language performance/safety specs, e.g.
-    "Settle under 1.2 s, overshoot < 8%, survive 0.05 N·m load after 1.5 s,
+    "Settle under 1.2 s, overshoot < 8%, survive a small load (~0.01 N·m) after 1.5 s,
      keep |u| <= 12 V, prefer low effort if multiple pass."
   LLM output (structured JSON schema):
     - hard constraints
@@ -132,14 +132,14 @@ P5 — Ablation Study (scientific honesty)
 - First controller family: PID; advanced topologies later, SAME interface.
 - Environment: uv-managed virtualenv (.venv); Python >= 3.12.
 - LLM: OpenAI API via openai + python-dotenv; key in .env (gitignored).
-- Jupyter kernel: "Python (agentic-dc-motor)" (name: agentic-dc-motor).
+- Demos: `examples/lab_01_*.py` … `examples/lab_08_*.py` (no Jupyter notebooks).
 - GitHub: origin -> https://github.com/abbasi07/agentic-dc-motor-control.git (main)
 - Controller interface (ALL topologies):
     reset()
     step(measurement, reference, dt) -> u
 - Evaluation is deterministic and shared (dc_motor.evaluate_controller).
-- Scalar score in Lab_02 is a DEMO aggregate (not a universal standard); primary
-  selection is constraints-first, then preferences from the Spec Agent.
+- Scalar score in lab_02 / evaluate is a DEMO aggregate (not a universal standard);
+  primary selection is constraints-first, then preferences from the Spec Agent.
 
 Plant parameters (CTMS — University of Michigan DC Motor Speed example):
   J = 0.01 kg·m^2
@@ -160,114 +160,103 @@ Transfer function (speed from voltage):
 --------------------------------------------------------------------------------
 4. CURRENT STATE (DONE)
 --------------------------------------------------------------------------------
-[x] Lab_01.ipynb — plant + open-loop + closed-loop PID + metrics
+[x] Plant + open-loop + closed-loop PID + metrics          (examples/lab_01_*)
 [x] Project tooling (uv, git, GitHub, .env.example, README)
-[x] Lab_02.ipynb + dc_motor/ — shared evaluation harness / scorecard JSON
-[ ] Spec Interpreter Agent (NL -> constraints JSON)                 (NEXT P1)
-[ ] PID Tuner / redesign tools under constraints
-[ ] Adaptive LLM Orchestrator loop (diagnose -> next action)
-[ ] Uncertainty stress suite expansion + failure tagging
-[ ] Advanced topology agents (MPC / Robust / RL) with same interface
-[ ] Simulation certification gate + export package (no hardware)
-[ ] Ablation: Fixed script vs Heuristic vs LLM orchestrator
-[ ] Design-rationale report generator (grounded in scorecard)
-[ ] SaaS-oriented API surface (design job in -> certified package out)
+[x] Shared evaluation harness / scorecard JSON             (dc_motor/ + examples/lab_02_*)
+[x] Spec Interpreter Agent (NL -> constraints JSON)                 (P1 DONE)
+[x] PID Tuner / redesign tools under constraints                    (P3 tools DONE)
+[x] Adaptive LLM Orchestrator loop (diagnose -> next action)        (P2+P3 DONE)
+[x] Uncertainty stress suite expansion + failure tagging            (P2 DONE)
+[x] Advanced topology agents (MPC / Robust / Adaptive / ID)         (P2/P3 DONE)
+[x] Simulation certification gate + export package (no hardware)    (P4 DONE)
+[x] Ablation: Fixed script vs Heuristic vs LLM orchestrator         (P5 DONE)
+[x] Design-rationale report generator (grounded in scorecard)
+[x] Professional package layout: examples/ + tests/ + hatch packages
+[x] Local Design Copilot MVP: saas/ FastAPI + Streamlit + plant registry
+[x] Repo purge: Lab_*.ipynb removed; examples/ are canonical demos
+[x] Generalized arbitrary-motor plant + physics feasibility (workstreams A + B)
+[x] Chat-first tool-calling Design Agent + grounded query_results (workstream D)
+[ ] Controller registry + real controllers: LQR/LQG, proper MPC, MRAC, Fuzzy (workstream C) — NEXT
+[ ] Multi-tenant SaaS (auth / billing) — optional later
+
 
 --------------------------------------------------------------------------------
 5. REVISED DETAILED BUILD SEQUENCE
 --------------------------------------------------------------------------------
 
 PHASE 0 — Plant foundation (COMPLETE)
-  Artifact: Lab_01.ipynb (open-loop)
+  Artifact: examples/lab_01_plant_pid.py (open-loop section)
   Outcome: Known plant dynamics; motivation for feedback.
 
 PHASE 1 — Closed-loop PID + metrics (COMPLETE)
-  Artifact: Lab_01.ipynb sections 3–4
+  Artifact: examples/lab_01_plant_pid.py
   Outcome: Working PID baseline + deterministic metrics.
 
 PHASE 2 — Shared Simulation & Evaluation harness (COMPLETE)
-  Artifacts: dc_motor/, Lab_02.ipynb
+  Artifacts: dc_motor/, examples/lab_02_evaluation.py
   Outcome: Multi-scenario scorecards; JSON export for agents.
   Principle: tools COMPUTE; LLMs READ scorecards only.
 
 ---------- RESEARCH / AGENTIC ARC BEGINS HERE ----------
 
-PHASE 3 — Spec Interpreter Agent  [PILLAR P1]  <<< NEXT IMPLEMENTATION
+PHASE 3 — Spec Interpreter Agent  [PILLAR P1]  (COMPLETE)
+  Artifacts:
+    - dc_motor/specs.py — DesignSpec, validation/clamps, parse_spec_template
+    - agents/spec_agent.py — interpret_spec / interpret_spec_llm / interpret_spec_auto
+    - examples/lab_03_spec_agent.py — NL demos + wire DesignSpec into evaluate_controller
   Goal: justify LLM by translating open-ended NL specs -> formal DesignSpec.
-  Artifacts (suggested):
-    - dc_motor/specs.py  (DesignSpec dataclass + schema validation)
-    - agents/spec_agent.py  (OpenAI call -> JSON DesignSpec)
-    - Lab_03.ipynb demo: several NL prompts -> constraints + scenario weights
-  DesignSpec fields (minimum):
-    - hard_constraints: {metric: (op, limit)}
-    - soft_preferences: weights or ranked objectives
-    - required_scenarios: list[str]
-    - voltage_limits, omega_ref, t_final defaults
-    - max_design_iterations, stop_on_pass
-  Safety: clamp absurd limits; require schema validation before orchestration.
-  Non-LLM baseline for ablation: regex/template parser for a tiny grammar.
 
-PHASE 4 — Constraint-aware PID Tuner + Redesign Tools  [supports P3]
+PHASE 4 — Constraint-aware PID Tuner + Redesign Tools  [supports P3]  (COMPLETE)
+  Artifacts:
+    - dc_motor/failure.py — FailureDigest (failed scenarios/metrics + margins + tags)
+    - dc_motor/scenarios.py — scenarios_from_spec; load torque 0.01 N·m (within ±12 V)
+    - agents/pid_tuner.py — grid_search_pid / optimize_pid / tune_pid (auto)
+    - examples/lab_04_pid_tuner.py — DesignSpec → tuner → scorecard + FailureDigest demos
   Goal: tools the orchestrator can CALL (not LLM inventing gains blindly).
   Methods:
     a) SciPy optimize / grid search scored by evaluate_controller
-    b) Classical rules as warm start (ZN etc.) optional
-  Outputs: candidate PIDController + scorecard.
-  On fail, expose structured FailureDigest:
-    which scenarios failed, which metrics, margin to limit.
-  Artifact: agents/pid_tuner.py + Lab_03/04 cells.
+    b) Classical heuristic warm start (zn_warm_start) optional
+  Outputs: candidate PIDController + scorecard + FailureDigest.
+  Note: absolute settling_time < load onset (1.5 s) on load_disturbance is
+  flagged POSSIBLY_INFEASIBLE_SPEC — recovery metrics come in Phase 6.
 
-PHASE 5 — Adaptive LLM Orchestrator (core agentic loop)  [P2+P3]
-  Goal: THIS is the cannon that earns its keep — iterative redesign under
-  uncertainty, not one-shot argmin.
-  Loop:
-    1) Spec Agent -> DesignSpec
-    2) Orchestrator picks next action from tool menu:
-         tune_pid | call_robust | call_mpc | call_rl | expand_scenarios | identify_plant | stop
-    3) Run tool -> evaluate_controller on required scenarios
-    4) If pass: write DesignRationale (cite scorecard numbers) -> certification candidate
-    5) If fail: LLM diagnoses FailureDigest -> new action (until budget)
+PHASE 5 — Adaptive LLM Orchestrator (core agentic loop)  [P2+P3]  (COMPLETE)
   Artifacts:
-    - agents/orchestrator.py
-    - Lab_04.ipynb end-to-end adaptive design session
-  Logging: full action trace for ablation (actions, scores, tokens, wall time).
+    - agents/orchestrator.py — run_design_session (script|heuristic|llm|llm_auto)
+    - Action menu: tune_pid_* | expand_scenarios | relax_settling_for_load |
+      call_robust/mpc/rl | identify_plant (Phase 7 stubs) | stop
+    - Full action_trace (actions, scores, wall time, tokens) for ablation
+    - examples/lab_05_orchestrator.py — end-to-end adaptive design session + mini A/B/C compare
+  Goal: iterative redesign under uncertainty, not one-shot argmin.
+  Demo result: on settling<=1.2 + load_disturbance, script fails while heuristic
+  diagnoses POSSIBLY_INFEASIBLE_SPEC → relax_settling_for_load → pass.
 
-PHASE 6 — Uncertainty digital-twin expansion  [P2]
-  Enrich scenarios beyond Lab_02 defaults:
-    - combined mismatch + load
-    - noise intensity sweeps
-    - worst-case scorecard (min pass / max ITAE across batch)
-  Failure tagging taxonomy for the orchestrator, e.g.:
-    TRACKING_SLOW | OVERSHOOT | DISTURBANCE_REJECT_FAIL | FRAGILE_TO_MISMATCH |
-    NOISE_SENSITIVE | SATURATION_HEAVY | MODEL_DISTRUST
-  LLM maps tags -> redesign action (documented policy prompt + examples).
+PHASE 6 — Uncertainty digital-twin expansion  [P2]  (COMPLETE)
+  Artifacts:
+    - scenarios: mismatch_load, noise_low/med/high, mismatch_harsh
+    - metrics.recovery_time_s + disturbance_onset_s
+    - evaluate_uncertainty_batch (pass_rate, worst_case_ITAE)
+    - FailureDigest tags + TAG_TO_ACTION_HINTS (incl. MODEL_DISTRUST, RECOVERY_SLOW)
+    - examples/lab_06_uncertainty.py
 
-PHASE 7 — Multi-topology specialist agents  [diagram + P2/P3]
-  Same interface; same evaluator; orchestrator chooses structure when retuning
-  PID is insufficient.
-  Agent A — PID (+ tuner)           baseline / fast iteration
-  Agent B — MPC                     Optimize Trajectory / explicit input constraints
-  Agent C — Robust / detuned PID or lead-lag   Maximize Stability under mismatch
-  Agent D — RL policy (sim-trained) Adaptive Learning under varying loads
-  Optional Agent E — Plant ID       propose/simulate identification maneuvers
-  Benchmark always includes well-tuned PID as baseline.
+PHASE 7 — Multi-topology specialist agents  [diagram + P2/P3]  (COMPLETE)
+  Artifacts:
+    - agents/specialists.py — Robust PID, MPC, AdaptivePID, plant ID (sim)
+    - Same reset()/step() interface; orchestrator call_robust/mpc/rl/identify_plant live
+    - examples/lab_07_specialists_certify.py (with certification)
 
-PHASE 8 — Simulation Certification Gate + Export Package  [P4]
-  certified = code check on scorecard (hard). NO hardware path.
-  If blocked: LLM explains why + proposes next sim experiment or spec relaxation.
-  If allowed: export controller config (JSON) + scorecard + rationale markdown.
-  This export is the SaaS "deliverable object."
+PHASE 8 — Simulation Certification Gate + Export Package  [P4]  (COMPLETE)
+  Artifacts:
+    - agents/certify.py — certify_candidate / export_certified_package
+    - Exports controller.json + scorecard.json + rationale.md (+ zip if ALLOW)
+    - Hard BLOCK if constraints fail (no hardware path)
+    - examples/lab_07_specialists_certify.py demo
 
-PHASE 9 — Ablation & research write-up package  [P5]
-  Fixed NL-spec benchmark suite (10–20 prompts + held-out plant perturbations).
-  Compare pipelines A/B/C (script / heuristic / LLM).
-  Metrics of the *design process*:
-    - fraction of specs solved
-    - mean design iterations
-    - evaluation calls
-    - token cost (LLM only)
-    - human preference on rationale quality (optional small study)
-  Deliverable: Lab_0X notebook + short report section / README research notes.
+PHASE 9 — Ablation & research write-up package  [P5]  (COMPLETE)
+  Artifacts:
+    - experiments/ablation.py — BENCHMARK_PROMPTS + run_ablation / summarize
+    - examples/lab_08_ablation.py — script vs heuristic vs llm_auto compare
+  Note: expand prompt suite / plant perturbations as research deepens.
 
 --------------------------------------------------------------------------------
 5B. SAAS PRODUCT FRAMING (SIMULATION-ONLY)
@@ -347,60 +336,65 @@ FORBIDDEN:
 --------------------------------------------------------------------------------
 7. NON-AGENT BASELINE (ALWAYS KEEP)
 --------------------------------------------------------------------------------
-A plain Python pipeline must remain available:
-  parse_spec_template() or fixed DesignSpec
-  -> run {PID tuner, fixed MPC, ...} list
-  -> evaluate all
-  -> lexicographic pick
-This is the control that prevents "LLM theater." The agentic system must beat
-it on adaptive redesign / open specs / uncertainty — or we report that honestly.
+Ablation still compares action policies on the SAME NL specs (all specs via OpenAI):
+  A) script: one-shot tune_pid_auto
+  B) heuristic: hand-coded redesign rules (no LLM for actions)
+  C) llm: OpenAI chooses next tool/action
+There is NO regex Spec Interpreter fallback. If OpenAI is unavailable, print
+llm_unavailable_message and fail clearly.
 
 --------------------------------------------------------------------------------
-8. SUGGESTED NOTEBOOK / MODULE LAYOUT
+8. PACKAGE / SCRIPT LAYOUT
 --------------------------------------------------------------------------------
-DONE:
-  Lab_01.ipynb — plant, open-loop, PID, metrics
-  Lab_02.ipynb — evaluation harness, scorecard, simple comparison
-  dc_motor/    — plant, controllers, metrics, scenarios, evaluate
+DONE (canonical Python package layout):
+  dc_motor/       — plant, motor_model, feasibility, controllers, metrics, scenarios, evaluate,
+                    specs, failure, registry
+  agents/         — spec_agent, plant_agent, pid_tuner, orchestrator, specialists, certify,
+                    design_candidate, design_agent (chat-first tool-calling loop)
+  experiments/    — ablation runners, NL-spec benchmark suite (+ comparison table)
+  examples/       — runnable lab_01…lab_08 demos (uv run python examples/lab_0N_*.py)
+  saas/           — Design Copilot: FastAPI jobs API (+ POST /jobs/{id}/agent) + Streamlit UI
+  tests/          — smoke/unit tests (mock interpret_spec; no OpenAI required)
+  pyproject.toml  — hatchling packages + pytest config
 
-NEXT:
-  Lab_03.ipynb — Spec Interpreter + PID tuner tools + FailureDigest
-  Lab_04.ipynb — Adaptive LLM orchestrator loop (end-to-end)
-  Lab_05.ipynb — Multi-topology agents under uncertainty
-  Lab_06.ipynb — Certification export + ablation vs non-agent baselines
+Jupyter notebooks (Lab_*.ipynb) were removed; examples/ are the only demos.
 
-Packages:
-  dc_motor/     — physics + evaluation (deterministic)
-  agents/       — spec_agent, pid_tuner, orchestrator, mpc/robust/rl wrappers
-  experiments/  — ablation runners, NL-spec benchmark suite
+NEXT (optional productization):
+  Auth / multi-tenant SaaS around the local Copilot (still simulation-only)
 
 --------------------------------------------------------------------------------
 9. ENVIRONMENT CHEAT SHEET
 --------------------------------------------------------------------------------
   uv sync
-  uv run python -m ipykernel install --user --name=agentic-dc-motor --display-name="Python (agentic-dc-motor)"
   copy .env.example .env   # then set OPENAI_API_KEY=...
 
 Do NOT commit .env.
-Run notebooks from project root so `import dc_motor` / `import agents` work.
+Run examples / Copilot from project root so `import dc_motor` / `import agents` work.
+Examples:  uv run python examples/lab_01_plant_pid.py
+Copilot:   uv run streamlit run saas/ui_streamlit.py
+           uv run uvicorn saas.api:app --port 8000   # /docs = Swagger only
+Tests:     uv sync --group dev && uv run pytest -q
 
 --------------------------------------------------------------------------------
 10. INSTRUCTIONS FOR A NEW CHAT AGENT
 --------------------------------------------------------------------------------
-- Read this file first; do not redo Phases 0–2 unless broken.
-- Phases 0–2 are DONE. Next implementation is PHASE 3 (Spec Interpreter Agent)
-  unless the user asks otherwise.
+- Read this file first; do not redo Phases 0–9 unless broken.
+- Package layout (examples/ + tests/) and local Design Copilot MVP (saas/) are DONE.
+  Repo purge (notebooks removed) is DONE. Optional next: auth/multi-tenant
+  productization (still simulation-only).
+- **OpenAI-only for NL/spec and LLM orchestrator actions.** No regex/template
+  fallback and no silent heuristic fallback when the API key/model is missing —
+  print ``llm_unavailable_message`` and raise. Ablation modes script/heuristic
+  still exist as *action policies*, but they also call ``interpret_spec`` (LLM)
+  for NL → DesignSpec.
 - Scope is **simulation/software only** — never add hardware deploy unless the
   user explicitly reverses this lock.
 - Preserve the five pillars P1–P5; do not collapse the project back into
   "LLM picks min score among fixed PIDs."
 - Keep evaluate_controller as the single source of truth for metrics/pass-fail.
 - New controllers: reset() / step(measurement, reference, dt).
-- Always retain a non-LLM baseline path for ablation.
-- Prefer implementing tools first (schema, tuner, failure digest), then LLM
-  orchestrator that calls those tools.
-- SaaS thinking: design toward a certifiable export package + job-style API,
-  even while labs remain notebooks.
+- Always retain a non-LLM baseline path for ablation (script + heuristic modes).
+- Certification gate is code-enforced; LLM may explain BLOCK/ALLOW only.
 - Update this file's CURRENT STATE checkboxes when a phase completes.
 
 ================================================================================

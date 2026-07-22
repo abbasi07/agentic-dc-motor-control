@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Callable
 from typing import Any, Protocol
 
 import numpy as np
@@ -73,9 +74,13 @@ def simulate_scenario(
     controller: ControllerProtocol,
     scenario: Scenario,
     base_params: MotorParams = CTMS_PARAMS,
+    plant_factory: Callable[[], Any] | None = None,
 ) -> dict[str, Any]:
     """Run one closed-loop scenario; return trajectories + metrics."""
-    plant = DCMotorPlant(base_params)
+    if plant_factory is not None:
+        plant = plant_factory()
+    else:
+        plant = DCMotorPlant(base_params)
     if scenario.plant_scale:
         plant = plant.with_mismatch(**scenario.plant_scale)
 
@@ -102,7 +107,7 @@ def simulate_scenario(
         u = float(controller.step(meas, ref, scenario.dt))
         saturated = bool(getattr(controller, "last_saturated", False))
 
-        # Log sample k before plant update (matches Lab_01 convention)
+        # Log sample k before plant update (measurement-before-update convention)
         omega[k] = true_omega
         u_hist[k] = u
         ref_hist[k] = ref
@@ -114,7 +119,15 @@ def simulate_scenario(
 
     # For step-like refs, evaluate tracking metrics against the final reference value
     y_ref = float(scenario.reference(scenario.t_final))
-    metrics = step_performance_metrics(t, omega, u_hist, e_hist, sat, y_ref)
+    metrics = step_performance_metrics(
+        t,
+        omega,
+        u_hist,
+        e_hist,
+        sat,
+        y_ref,
+        disturbance_onset_s=scenario.disturbance_onset_s,
+    )
 
     return {
         "scenario": scenario.name,
@@ -135,6 +148,7 @@ def evaluate_controller(
     constraints: dict[str, tuple[str, float]] | None = None,
     score_weights: dict[str, float] | None = None,
     base_params: MotorParams = CTMS_PARAMS,
+    plant_factory: Callable[[], Any] | None = None,
 ) -> dict[str, Any]:
     """Simulation & Evaluation Node.
 
@@ -146,7 +160,9 @@ def evaluate_controller(
 
     per_scenario = []
     for sc in scenarios:
-        result = simulate_scenario(controller, sc, base_params=base_params)
+        result = simulate_scenario(
+            controller, sc, base_params=base_params, plant_factory=plant_factory
+        )
         constraint_result = _check_constraints(result["metrics"], constraints)
         scalar = _scalar_score(result["metrics"], score_weights)
         per_scenario.append(
@@ -170,6 +186,11 @@ def evaluate_controller(
     all_pass = all(item["constraints"]["all_pass"] for item in per_scenario)
     # Aggregate: mean scalar score across scenarios (lower is better)
     mean_score = float(np.mean([item["scalar_score"] for item in per_scenario]))
+    itaes = [float(item["metrics"].get("ITAE", float("nan"))) for item in per_scenario]
+    itaes_finite = [v for v in itaes if not math.isnan(v)]
+    worst_itae = float(max(itaes_finite)) if itaes_finite else float("nan")
+    n_pass = sum(1 for item in per_scenario if item["constraints"]["all_pass"])
+    n_scen = len(per_scenario)
 
     return {
         "controller": getattr(controller, "name", controller.__class__.__name__),
@@ -179,9 +200,40 @@ def evaluate_controller(
         "summary": {
             "all_constraints_pass": all_pass,
             "mean_scalar_score": mean_score,
-            "n_scenarios": len(per_scenario),
+            "n_scenarios": n_scen,
+            "n_scenarios_pass": n_pass,
+            "pass_rate": float(n_pass / n_scen) if n_scen else 0.0,
+            "worst_case_ITAE": worst_itae,
+            "min_pass": all_pass,
         },
     }
+
+
+def evaluate_uncertainty_batch(
+    controller: ControllerProtocol,
+    *,
+    include_baseline: bool = True,
+    constraints: dict[str, tuple[str, float]] | None = None,
+    score_weights: dict[str, float] | None = None,
+    base_params: MotorParams = CTMS_PARAMS,
+    plant_factory: Callable[[], Any] | None = None,
+) -> dict[str, Any]:
+    """Run baseline + Phase 6 stress suite; return scorecard with worst-case summary."""
+    from .scenarios import default_scenarios_extended
+
+    scenarios = default_scenarios_extended() if include_baseline else None
+    if scenarios is None:
+        from .scenarios import uncertainty_scenarios
+
+        scenarios = uncertainty_scenarios()
+    return evaluate_controller(
+        controller,
+        scenarios=scenarios,
+        constraints=constraints,
+        score_weights=score_weights,
+        base_params=base_params,
+        plant_factory=plant_factory,
+    )
 
 
 def scorecard_to_json(scorecard: dict[str, Any], indent: int = 2) -> str:

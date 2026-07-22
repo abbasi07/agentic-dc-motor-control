@@ -18,6 +18,9 @@ wheels/
 .ipynb_checkpoints/
 */.ipynb_checkpoints/
 
+# Local simulation exports (cert packages / ablation JSON)
+exports/
+
 # OS / IDE
 .DS_Store
 Thumbs.db

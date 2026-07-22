@@ -1,0 +1,356 @@
+"""Job workflow helpers used by FastAPI and Streamlit."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from agents.certify import certify_candidate, export_certified_package
+from agents.orchestrator import run_design_session
+from agents.plant_agent import interpret_plant, motor_model_from_dict
+from agents.spec_agent import interpret_spec, llm_unavailable_message
+from dc_motor.evaluate import scorecard_to_json
+from dc_motor.feasibility import check_feasibility
+from dc_motor.motor_model import MotorModel
+from dc_motor.plant import MotorParams
+from dc_motor.registry import DEFAULT_PLANT_ID, get_plant_spec, list_plants, motor_params_for
+from dc_motor.specs import DesignSpec, design_spec_from_dict
+
+from .clarify import critique_design_spec
+from .feedback import apply_user_feedback
+from .jobs import DesignJob, JobStore, default_export_dir, get_job_store
+from .present import design_finished_message, feedback_plan_message
+
+
+def create_job(*, plant_id: str = DEFAULT_PLANT_ID, mode: str = "heuristic") -> DesignJob:
+    get_plant_spec(plant_id)  # validate
+    return get_job_store().create(plant_id=plant_id, mode=mode)
+
+
+# --------------------------------------------------------------------------- #
+# Custom DC motor (chat-defined plant)
+# --------------------------------------------------------------------------- #
+def _record_motor(job: DesignJob, motor: MotorModel) -> DesignJob:
+    job._motor = motor
+    job.motor_dict = motor.to_dict()
+    job.plant_id = "custom_dc_motor"
+    if motor.warnings:
+        warn_md = "\n".join(f"- {w}" for w in motor.warnings)
+        note = f"\n\nHeads-up on the numbers you gave:\n{warn_md}"
+    else:
+        note = ""
+    chars = motor.to_dict()["characteristics"]
+    job.chat.append(
+        {
+            "role": "assistant",
+            "content": (
+                f"Got it — I set up **{motor.name}** as the plant. "
+                f"It reaches about **{chars['omega_max_rad_s']:.4g} rad/s** at ±{motor.V_max:g} V "
+                f"(dominant time constant ≈ {chars['tau_mech_s']:.4g} s). "
+                "Now tell me the performance you need." + note
+            ),
+        }
+    )
+    job.touch()
+    return job
+
+
+def set_motor_from_text(job: DesignJob, text: str, *, append_user: bool = True) -> DesignJob:
+    """Interpret a natural-language DC-motor description into a custom plant."""
+    if append_user:
+        job.chat.append({"role": "user", "content": text.strip()})
+    try:
+        motor = interpret_plant(text)
+    except RuntimeError as exc:
+        job.error = str(exc)
+        job.touch()
+        raise
+    return _record_motor(job, motor)
+
+
+def set_motor_from_params(job: DesignJob, params: dict[str, Any]) -> DesignJob:
+    """Set a custom plant from explicit numeric parameters (no LLM)."""
+    motor = motor_model_from_dict(params, source="manual")
+    return _record_motor(job, motor)
+
+
+def effective_motor_params(job: DesignJob) -> MotorParams:
+    """MotorParams the design run should use: custom motor if set, else the registry plant."""
+    if job._motor is None and job.motor_dict is not None:
+        job._motor = motor_model_from_dict(
+            {**job.motor_dict.get("params", {}), "V_max": job.motor_dict.get("V_max", 12.0),
+             "name": job.motor_dict.get("name", "custom_dc_motor")},
+            source="manual",
+        )
+    if job._motor is not None:
+        return job._motor.params
+    return motor_params_for(job.plant_id)
+
+
+def _feasibility_for_job(job: DesignJob, spec: DesignSpec) -> dict[str, Any]:
+    params = effective_motor_params(job)
+    report = check_feasibility(params, spec)
+    job.feasibility = report.to_dict()
+    return job.feasibility
+
+
+def interpret_job_spec(
+    job: DesignJob,
+    nl_text: str,
+    *,
+    critique: bool = True,
+    append_user: bool = True,
+) -> DesignJob:
+    job.nl_spec = nl_text.strip()
+    if append_user:
+        job.chat.append({"role": "user", "content": job.nl_spec})
+    try:
+        spec = interpret_spec(job.nl_spec)
+    except RuntimeError as exc:
+        job.status = "failed"
+        job.error = str(exc)
+        job.touch()
+        raise
+
+    job._spec = spec
+    job.spec_dict = spec.to_dict()
+    job.confirmed = False
+
+    # Physics-based feasibility against the (custom or registry) motor.
+    feas = _feasibility_for_job(job, spec)
+    feas_questions = [
+        f"{i['message']} {i.get('suggestion', '')}".strip()
+        for i in feas.get("issues", [])
+        if i.get("severity") in {"error", "warning"}
+    ]
+    has_infeasible = not feas.get("feasible", True)
+
+    if critique:
+        critique_result = critique_design_spec(spec, plant_id=job.plant_id)
+        questions = list(critique_result.get("questions", []))
+        # Feasibility errors/warnings lead the list (most actionable).
+        for q in feas_questions:
+            if q not in questions:
+                questions.insert(0, q)
+        job.clarifying_questions = questions
+
+        if has_infeasible or critique_result.get("needs_clarification"):
+            job.status = "needs_clarification"
+            q_md = "\n".join(f"- {q}" for q in job.clarifying_questions) or "- (none)"
+            lead = (
+                "These targets are **not physically achievable** on this motor as stated. "
+                "Let's fix them before designing:"
+                if has_infeasible
+                else "I translated your goals into performance requirements, "
+                "but a few points need clarifying before we design:"
+            )
+            job.chat.append({"role": "assistant", "content": f"{lead}\n{q_md}"})
+        else:
+            job.status = "spec_ready"
+            ceiling = feas.get("characteristics", {}).get("omega_max_rad_s")
+            extra = (
+                f" (motor ceiling ≈ {float(ceiling):.4g} rad/s)" if isinstance(ceiling, (int, float)) else ""
+            )
+            job.chat.append(
+                {
+                    "role": "assistant",
+                    "content": (
+                        f"Your requirements look complete and feasible{extra}. "
+                        "Review them in **Step 2**, then click **Design controller**."
+                    ),
+                }
+            )
+    else:
+        job.status = "needs_clarification" if has_infeasible else "spec_ready"
+        job.clarifying_questions = feas_questions if has_infeasible else []
+
+    job.touch()
+    return job
+
+
+def answer_clarification(job: DesignJob, answer: str) -> DesignJob:
+    """Append clarification and re-interpret combined NL + answer."""
+    answer = answer.strip()
+    job.chat.append({"role": "user", "content": answer})
+    combined = (job.nl_spec + "\nClarification: " + answer).strip()
+    return interpret_job_spec(job, combined, critique=True, append_user=False)
+
+
+def confirm_and_run(
+    job: DesignJob,
+    *,
+    max_iterations: int | None = None,
+    maxiter_scipy: int = 8,
+) -> DesignJob:
+    if job._spec is None and job.spec_dict is not None:
+        job._spec = design_spec_from_dict(job.spec_dict, raw_spec=job.nl_spec, source="manual")
+    if job._spec is None:
+        raise RuntimeError("No DesignSpec to confirm. Interpret a natural-language spec first.")
+
+    job.confirmed = True
+    job.status = "running"
+    job.error = None
+    job.touch()
+    iters = max_iterations if max_iterations is not None else job.max_iterations
+
+    # A chat-defined custom motor overrides the registry plant: pass MotorParams
+    # directly (plant_id=None) so the engine simulates the user's actual motor.
+    use_custom = job._motor is not None or job.motor_dict is not None
+    run_kwargs: dict[str, Any] = dict(
+        mode=job.mode,  # type: ignore[arg-type]
+        max_iterations=iters,
+        maxiter_scipy=maxiter_scipy,
+        spec=job._spec,
+    )
+    if use_custom:
+        run_kwargs["base_params"] = effective_motor_params(job)
+        run_kwargs["plant_id"] = None
+    else:
+        run_kwargs["plant_id"] = job.plant_id
+
+    try:
+        session = run_design_session(
+            job.nl_spec or job._spec.raw_spec,
+            **run_kwargs,
+        )
+    except Exception as exc:  # noqa: BLE001
+        job.status = "failed"
+        job.error = str(exc)
+        job.touch()
+        raise
+
+    job._session = session
+    job._spec = session.spec
+    job.spec_dict = session.spec.to_dict()
+    job.session_dict = session.to_dict(include_scorecard_json=False)
+    job.scorecard = None if session.best is None else session.best.scorecard
+    if session.best is not None:
+        cert = certify_candidate(session.best)
+        job.certification = cert.to_dict()
+    else:
+        job.certification = None
+
+    job.status = "completed"
+    if session.best is not None:
+        summary = design_finished_message(
+            session.status,
+            session.best.kind,
+            bool(session.best.failure_digest.all_pass),
+        )
+    else:
+        summary = (
+            "Design finished without a usable controller candidate. "
+            f"{session.status.replace('_', ' ')}."
+        )
+    job.chat.append({"role": "assistant", "content": summary})
+    job.touch()
+    return job
+
+
+def apply_feedback_and_maybe_rerun(
+    job: DesignJob,
+    feedback: str,
+    *,
+    use_llm: bool = False,
+    rerun: bool = True,
+) -> DesignJob:
+    if job._spec is None and job.spec_dict is not None:
+        job._spec = design_spec_from_dict(job.spec_dict, raw_spec=job.nl_spec, source="manual")
+    if job._spec is None:
+        raise RuntimeError("No DesignSpec available for feedback.")
+
+    job.chat.append({"role": "user", "content": feedback})
+    summary = None if job.scorecard is None else job.scorecard.get("summary")
+    updated_spec, plan = apply_user_feedback(
+        job._spec,
+        feedback,
+        use_llm=use_llm,
+        scorecard_summary=summary,
+    )
+    job._spec = updated_spec
+    job.spec_dict = updated_spec.to_dict()
+    job.chat.append({"role": "assistant", "content": feedback_plan_message(plan)})
+
+    action = plan["action"]
+
+    # Actions that must NOT silently rerun the design loop.
+    if action in {"accept", "unclear"}:
+        job.touch()
+        return job
+
+    if action == "reinterpret_spec":
+        return interpret_job_spec(job, feedback, critique=True, append_user=False)
+
+    if rerun:
+        # Prefer heuristic redesign after feedback; keep user's mode if llm
+        return confirm_and_run(job)
+
+    job.touch()
+    return job
+
+
+def export_job(job: DesignJob, *, out_dir: Path | None = None) -> Path:
+    if job._session is None or job._session.best is None:
+        raise RuntimeError("No design candidate to export.")
+    out = out_dir or default_export_dir()
+    path = export_certified_package(
+        job._session.best,
+        rationale=job._session.rationale or "Exported from Design Copilot.",
+        out_dir=out,
+        nl_spec=job.nl_spec,
+        action_trace=[a.to_dict() for a in job._session.action_trace],
+    )
+    job.export_path = str(path)
+    job.status = "exported" if path.suffix == ".zip" else "completed"
+    job.touch()
+    return path
+
+
+def get_agent_session(job: DesignJob):
+    """Return (creating if needed) the chat-first Design Agent bound to this job."""
+    from agents.design_agent import DesignAgentSession
+
+    if job._agent is None:
+        job._agent = DesignAgentSession(job=job, model=None)
+    return job._agent
+
+
+def agent_chat(job: DesignJob, message: str) -> DesignJob:
+    """Send one message to the tool-calling Design Agent (OpenAI-only chat loop)."""
+    session = get_agent_session(job)
+    try:
+        session.chat(message)
+    except RuntimeError as exc:
+        job.error = str(exc)
+        job.touch()
+        raise
+    return job
+
+
+def scorecard_json_for_job(job: DesignJob) -> str | None:
+    if job.scorecard is None:
+        return None
+    return scorecard_to_json(job.scorecard)
+
+
+def plants_public() -> list[dict[str, Any]]:
+    return [p.to_dict() for p in list_plants()]
+
+
+__all__ = [
+    "agent_chat",
+    "answer_clarification",
+    "apply_feedback_and_maybe_rerun",
+    "confirm_and_run",
+    "create_job",
+    "effective_motor_params",
+    "export_job",
+    "get_agent_session",
+    "get_job_store",
+    "interpret_job_spec",
+    "llm_unavailable_message",
+    "plants_public",
+    "scorecard_json_for_job",
+    "set_motor_from_params",
+    "set_motor_from_text",
+]

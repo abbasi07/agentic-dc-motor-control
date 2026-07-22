@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 
@@ -11,8 +13,21 @@ def _trapz(y, x) -> float:
     return float(np.trapz(y, x))
 
 
-def step_performance_metrics(t, y, u, e, saturated, y_ref, settle_band: float = 0.02) -> dict:
-    """Compute standard step-response and effort metrics (JSON-friendly floats)."""
+def step_performance_metrics(
+    t,
+    y,
+    u,
+    e,
+    saturated,
+    y_ref,
+    settle_band: float = 0.02,
+    disturbance_onset_s: float | None = None,
+) -> dict:
+    """Compute standard step-response and effort metrics (JSON-friendly floats).
+
+    If ``disturbance_onset_s`` is set, also report ``recovery_time_s`` =
+    time from onset until the response last enters the settle band (NaN if never).
+    """
     t = np.asarray(t, dtype=float)
     y = np.asarray(y, dtype=float)
     u = np.asarray(u, dtype=float)
@@ -48,7 +63,24 @@ def step_performance_metrics(t, y, u, e, saturated, y_ref, settle_band: float = 
     else:
         sat_time = 0.0
 
-    return {
+    recovery_time = float("nan")
+    if disturbance_onset_s is not None:
+        onset = float(disturbance_onset_s)
+        mask = t >= onset
+        if np.any(mask):
+            y_post = y[mask]
+            t_post = t[mask]
+            outside_post = np.abs(y_post - y_ref) > band
+            if not np.any(outside_post):
+                recovery_time = 0.0
+            else:
+                last_out = int(np.where(outside_post)[0][-1])
+                if last_out + 1 < len(t_post):
+                    recovery_time = float(t_post[last_out + 1] - onset)
+                else:
+                    recovery_time = float("nan")
+
+    out = {
         "rise_time_s": rise_time,
         "settling_time_s": settling_time,
         "overshoot_pct": overshoot_pct,
@@ -58,4 +90,9 @@ def step_performance_metrics(t, y, u, e, saturated, y_ref, settle_band: float = 
         "ITAE": _trapz(t * np.abs(e), t),
         "control_effort": _trapz(np.abs(u), t),
         "saturation_time_s": sat_time,
+        "recovery_time_s": recovery_time,
     }
+    # Keep JSON friendly if recovery unused
+    if disturbance_onset_s is None and math.isnan(recovery_time):
+        out["recovery_time_s"] = float("nan")
+    return out
