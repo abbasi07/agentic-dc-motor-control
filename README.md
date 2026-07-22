@@ -12,7 +12,7 @@ uv sync
 uv run python -m ipykernel install --user --name=agentic-dc-motor --display-name="Python (agentic-dc-motor)"
 ```
 
-Open `Lab_01.ipynb` and select the **Python (agentic-dc-motor)** kernel.
+Open notebooks with the **Python (agentic-dc-motor)** kernel (project root must be on `PYTHONPATH` / cwd so `import dc_motor` works).
 
 ## OpenAI API key (later labs)
 
@@ -27,7 +27,12 @@ Load with `python-dotenv` when agent code is added. Do not commit `.env`.
 
 | Notebook | Focus |
 |----------|--------|
-| `Lab_01.ipynb` | DC motor parameters (CTMS) + open-loop speed step response |
+| `Lab_01.ipynb` | CTMS plant + open-loop + closed-loop PID + metrics |
+| `Lab_02.ipynb` | Shared evaluation harness / scorecard (`dc_motor` package) |
+
+Package: `dc_motor/` — plant, `PIDController`, scenarios, `evaluate_controller`, JSON scorecard export.
+
+Roadmap: `PROJECT_SEQUENCE.txt`.
 
 ## Dependencies
 
