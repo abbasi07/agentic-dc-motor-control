@@ -13,6 +13,7 @@ Read first:
 Repo: https://github.com/abbasi07/agentic-dc-motor-control
 Local: E:\Agentic AI Course\Projects\1_Agentic_Orchestration_of_DC_Motor_Control
 Stack: uv + .venv, Python >=3.12, OpenAI via .env (OPENAI_API_KEY, OPENAI_MODEL=gpt-5.4-nano). Do not commit .env.
+Control libs: python-control (LQR/LQG/Kalman), cvxpy + osqp (constrained MPC QP).
 
 ## Product vision (the goal we are building toward)
 A chat-first "Control Design Copilot": the engineer (1) describes ANY DC motor and
@@ -26,23 +27,22 @@ workflow. UI is deferred (React later); we are improving FUNCTIONALITY + AGENTIC
 ## Roadmap workstreams (agreed with user)
 A. Generalize plant to arbitrary DC motor from chat            — DONE
 B. Physics-based feasibility / validation of specs            — DONE
-C. Controller registry + real controllers                     — TODO  <-- START HERE (next)
-     commit to: LQR/LQG, proper constrained MPC (upgrade toy one),
-     Adaptive/MRAC, Fuzzy PID. Keep existing PID + Robust PID. DEFER RL (roadmap only).
+C. Controller registry + real controllers                     — DONE
+     LQR/LQG (python-control), proper constrained MPC (cvxpy/OSQP, replaced the
+     toy line-search), MRAC (Lyapunov), Fuzzy PID (Takagi–Sugeno). Kept PID +
+     Robust PID. RL deferred (roadmap only). Pluggable registry + grounded critic.
 D. Chat-first tool-calling Design Agent + query_results        — DONE
      OpenAI function-calling loop owning the session; tools = define_plant,
      set_spec, check_feasibility, design_controller(type), simulate, query_results,
      modify, export/certify. LLM plans/talks; tools compute every number.
-     query_results answers arbitrary questions strictly from stored scorecard/session
-     (never invents numbers). Custom-motor "define your motor in chat" wired here.
 E. SaaS hardening: persistence (SQLite/Postgres), auth/multi-tenant, async design
      runs (grid + differential_evolution are blocking/CPU-heavy), token budgets,
-     rate limiting, structured logging/trace of every tool call.               — TODO
+     rate limiting, structured logging/trace of every tool call.  — TODO  <-- START HERE (next)
 F. Agent eval harness (extend experiments/ablation.py): reaches certified design?
      how many tool calls / tokens? query grounding tests.                      — TODO
 
-Order: D -> C -> E, with F throughout. Backend-first for D (keep Streamlit a thin
-throwaway harness; do NOT polish it). D is now DONE; C is next.
+Order: D -> C -> E, with F throughout. Backend-first (keep Streamlit a thin
+throwaway harness; do NOT polish it). D + C are now DONE; E is next.
 
 ## Done this chat (A + B — do not redo unless broken)
 - dc_motor/motor_model.py  — MotorModel + build_motor_model() validation (positive/finite/
@@ -72,7 +72,7 @@ throwaway harness; do NOT polish it). D is now DONE; C is next.
 - agents/design_agent.py — DesignAgentSession: OpenAI function-calling loop that OWNS a
     DesignJob and exposes the engine as 8 typed tools: define_plant (NL or numeric motor),
     set_spec (NL->DesignSpec + auto feasibility), check_feasibility, design_controller(type in
-    {auto,pid,robust,mpc,adaptive}), simulate (re-evaluate), query_results, modify, export.
+    {auto,pid,robust,lqr,lqg,mpc,mrac,fuzzy,adaptive}), simulate, query_results, modify, export.
     chat() runs the tool loop; tools are plain Python (deterministic, testable without OpenAI).
 - query_results is DETERMINISTIC and grounded: it only returns numbers already present in the
     stored scorecard (metric/scenario/pass-fail lookups via alias maps + digit-free scenario
@@ -84,6 +84,33 @@ throwaway harness; do NOT polish it). D is now DONE; C is next.
     number absent from the scorecard (parametrized). test_api.py — agent route smoke (mocked chat).
 - Full suite: 47 passed (was 33). Lints clean.
 
+## Done this chat (workstream C — do not redo unless broken)
+- dc_motor/state_space.py — motor_state_space(params) -> continuous (A,B,C,D,E) realization
+    (states [i, omega], output omega) + ZOH discretize(dt); shared by model-based controllers.
+- agents/controllers_advanced.py — real controllers, all reset()/step():
+    * StateFeedbackServoController — integral-augmented LQI + observer (LQR: Luenberger via
+      control.place; LQG: Kalman via control.lqe).
+    * MPCController — PROPER constrained receding-horizon QP (cvxpy/OSQP), hard |u|<=V_max in
+      the optimizer, offset-free via output-disturbance estimator, digital Ts + horizon from
+      motor characteristics. REPLACED the toy line-search MPC.
+    * MRACController — Lyapunov model-reference adaptive control (normalized update + sigma-mod).
+    * FuzzyPIDController — Takagi–Sugeno fuzzy gain scheduling on error magnitude.
+- agents/specialists.py — design_lqr/lqg/mpc/mrac/fuzzy (+ kept design_robust_pid, plant ID);
+    design_adaptive now returns MRAC. Shared _score() helper. Toy MPCController removed.
+- agents/controller_registry.py — ControllerFamily (kind, type_name, action, label, description,
+    designer, addresses_tags, aliases). CONTROLLER_FAMILIES, CONTROLLER_TYPE_NAMES, design_by_type,
+    families_for_tags, registry_metadata. Single source of truth for families.
+- agents/critic.py — diagnose(candidate, spec, tried) -> Diagnosis (ordered recommended_actions +
+    families from FailureDigest tags). GROUNDED: reads only the digest, invents no numbers.
+- agents/orchestrator.py — AVAILABLE_ACTIONS += call_lqr/call_lqg/call_mrac/call_fuzzy (call_mpc
+    now real; call_rl kept as MRAC alias). Heuristic policy uses diagnose(); LLM prompt+payload get
+    the family menu + grounded diagnosis. dc_motor/failure.py TAG_TO_ACTION_HINTS updated per family.
+- agents/design_agent.py — CONTROLLER_TYPES sourced from registry; design_controller dispatches via
+    design_by_type. saas/present.py + saas/feedback.py — labels/actions for lqr/lqg/mpc/mrac/fuzzy.
+- Tests: tests/test_controllers_advanced.py, test_controller_registry.py, test_orchestrator_actions.py.
+    Full suite: 93 passed (was 48). Lints clean. e2e heuristic loop verified to escalate
+    PID -> scipy -> call_lqr -> call_robust -> call_lqg -> call_mrac -> expand/relax under a hard spec.
+
 ## Known gap left open (intentional)
 - Streamlit UI does NOT yet surface the chat-first agent (define motor + design in one chat);
   capability lives in agents/design_agent.py + service + POST /jobs/{id}/agent. Hook the UI up
@@ -92,6 +119,8 @@ throwaway harness; do NOT polish it). D is now DONE; C is next.
 ## Locked decisions (do not reverse)
 - Simulation/software only; export = certification package, not hardware.
 - Controller interface: reset(); step(measurement, reference, dt) -> u.
+- New controller families are added via agents/controller_registry.py ONLY (one
+  ControllerFamily entry auto-wires design_controller + orchestrator menus + labels).
 - Tools compute metrics/pass-fail; LLM NEVER invents numbers from plots or prose.
 - OpenAI-only for NL->spec (interpret_spec) and NL->motor (interpret_plant); no regex
   agent fallback. Feasibility/validation is deterministic physics (not an LLM path).
@@ -107,19 +136,27 @@ UI:    uv run streamlit run saas/ui_streamlit.py   -> http://localhost:8501
 API:   uv run uvicorn saas.api:app --port 8000     (/docs = Swagger only, not the GUI)
 Tests: uv sync --group dev && uv run pytest -q
 
-## THIS CHAT — start workstream C (unless user redirects)
-Controller registry + real controllers. Add a pluggable controller registry so
-design_controller(type) can dispatch to more families behind the same reset()/step()
-interface: commit to LQR/LQG, a PROPER constrained MPC (upgrade the current toy line-search
-MPCController), Adaptive/MRAC, and Fuzzy PID. Keep existing PID + Robust PID. DEFER RL
-(roadmap only). Wire each new type into agents/design_agent.CONTROLLER_TYPES + the
-orchestrator action menu, and add deterministic tests (no OpenAI). Ask the user only if a
-decision is blocking.
+## THIS CHAT — start workstream E (unless user redirects)
+SaaS hardening (still simulation-only). Likely items: persistence (SQLite/Postgres) for the
+in-memory JobStore; auth / multi-tenant scoping of jobs; async design runs (grid +
+differential_evolution + per-step MPC QPs are blocking/CPU-heavy — offload to a worker/thread
+so the API stays responsive); token + iteration budgets; rate limiting; structured
+logging/trace of every tool call (the design agent already keeps tool_log). Keep workstream F
+(eval harness) going throughout: extend experiments/ablation.py to score the new families and
+add query-grounding tests. Ask the user only if a decision is blocking.
+
+Note on C (done): controller families live in agents/controller_registry.py. To add another
+family, add ONE ControllerFamily entry (kind, type_name, action, designer returning a scored
+DesignCandidate, addresses_tags) — design_controller, orchestrator menus, and SaaS labels wire
+up automatically. Advanced controllers are in agents/controllers_advanced.py; designers in
+agents/specialists.py; state-space model in dc_motor/state_space.py; grounded critic in
+agents/critic.py.
 
 ### Do NOT
 - Delete .env (local) or commit secrets.
 - Remove the OpenAI-only spec/motor interpret paths.
 - Turn feasibility into an LLM guess (it must stay deterministic physics).
+- Collapse the controller registry back into hard-coded if/else dispatch.
 - Large drive-by refactors unrelated to the chosen workstream.
 - Polish Streamlit into a "final" UI (React will replace it).
 ```

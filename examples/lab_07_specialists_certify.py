@@ -15,10 +15,9 @@ ensure_project_on_path()
 require_openai_or_exit()
 
 from agents import (  # noqa: E402
+    CONTROLLER_FAMILIES,
     certify_candidate,
-    design_adaptive,
-    design_mpc,
-    design_robust_pid,
+    design_by_type,
     export_certified_package,
     identify_plant_sim,
     interpret_spec,
@@ -42,22 +41,16 @@ def main(argv: list[str] | None = None) -> int:
         "scenarios: step_1rads, load_disturbance, plant_mismatch"
     )
 
-    robust = design_robust_pid(spec)
-    mpc = design_mpc(spec)
-    adap = design_adaptive(spec)
     print("Plant ID:", identify_plant_sim())
 
-    for name, cand in [("robust", robust), ("mpc", mpc), ("adaptive", adap)]:
+    # Design every registered controller family via the pluggable registry.
+    print("\nController families (pluggable registry):")
+    for fam in CONTROLLER_FAMILIES:
+        cand = design_by_type(fam.type_name, spec)
         print(
-            name,
-            "kind",
-            cand.kind,
-            "pass",
-            cand.failure_digest.all_pass,
-            "obj",
-            round(cand.objective, 4),
-            "tags",
-            cand.failure_digest.tags,
+            f"  {fam.type_name:8s} kind={cand.kind:11s} "
+            f"pass={cand.failure_digest.all_pass!s:5s} "
+            f"obj={round(cand.objective, 4)} tags={cand.failure_digest.tags}"
         )
 
     sess = run_design_session(

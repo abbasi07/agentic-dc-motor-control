@@ -51,8 +51,8 @@ type, and ask follow-ups like *"what was the settling time?"* in one conversatio
 
 | Path | Role |
 |------|------|
-| `dc_motor/` | Plant, controllers, metrics, scenarios, eval, specs, `FailureDigest`, **plant registry** |
-| `agents/` | Spec agent, PID tuner, orchestrator, specialists, certification / export |
+| `dc_motor/` | Plant, controllers, **state-space model**, metrics, scenarios, eval, specs, `FailureDigest`, **plant registry** |
+| `agents/` | Spec agent, PID tuner, orchestrator, **controller registry**, specialist designers, advanced controllers, **critic**, certification / export |
 | `experiments/` | Ablation suite (`run_ablation`, comparison table) |
 | `saas/` | FastAPI jobs API + Streamlit UI + clarify/feedback |
 | `examples/` | Runnable CLI demos (`lab_01` … `lab_08`) |
@@ -61,6 +61,30 @@ type, and ask follow-ups like *"what was the settling time?"* in one conversatio
 Roadmap / decisions: `PROJECT_SEQUENCE.txt`.
 
 Plant registry IDs: `dc_motor_ctms`, `first_order_lag`, `position_servo`.
+
+### Controller families (pluggable registry)
+
+`agents/controller_registry.py` maps each controller *kind* to a designer + metadata
+(the `design_controller(type=…)` name, the orchestrator `call_*` action, human labels,
+and the `FailureDigest` tags it addresses). All controllers share
+`reset()` / `step(measurement, reference, dt) -> u` and are scored by
+`evaluate_controller`.
+
+| Type | Kind | Method | Library |
+|------|------|--------|---------|
+| `pid` | `pid` | Constraint-aware PID (grid + differential evolution) | scipy |
+| `robust` | `robust_pid` | Mismatch-focused detuned PID | scipy |
+| `lqr` | `lqr` | Integral-augmented LQR + Luenberger observer | python-control |
+| `lqg` | `lqg` | Integral-augmented LQR + Kalman filter | python-control |
+| `mpc` | `mpc` | Constrained receding-horizon QP (offset-free) | cvxpy + OSQP |
+| `mrac` / `adaptive` | `mrac` | Lyapunov model-reference adaptive control | numpy |
+| `fuzzy` | `fuzzy_pid` | Takagi–Sugeno fuzzy gain-scheduling PID | numpy |
+
+Each family is also an orchestrator action (`call_lqr`, `call_lqg`, `call_mpc`,
+`call_mrac`, `call_fuzzy`, `call_robust`), so the adaptive redesign loop can switch
+*structure* — not just retune gains — when a failure pattern calls for it. A grounded
+`agents/critic.py` translates the `FailureDigest` into an ordered action recommendation
+(never inventing numbers).
 
 ## Run examples
 
@@ -84,10 +108,12 @@ uv run pytest -q
 - `agents.interpret_spec`, `interpret_plant`, `tune_pid`, `run_design_session` (optional `spec=`, `plant_id=`)
 - `agents.DesignAgentSession` — chat-first tool-calling Design Agent (workstream D);
   deterministic tools + grounded `query_results` (never invents numbers)
+- `agents.design_by_type`, `CONTROLLER_FAMILIES`, `registry_metadata` — pluggable
+  controller registry (workstream C); `agents.diagnose` — grounded design critic
 - `agents.certify_candidate`, `export_certified_package`
 - `experiments.run_ablation`, `ablation_comparison_table`
 - `saas.api:app` job endpoints under `/jobs` (incl. `POST /jobs/{id}/agent` chat-first agent)
 
 ## Dependencies
 
-Managed in `pyproject.toml` via [uv](https://docs.astral.sh/uv/). Runtime: `numpy`, `scipy`, `matplotlib`, `openai`, `python-dotenv`, `fastapi`, `uvicorn`, `streamlit`. Dev: `pytest`, `httpx`.
+Managed in `pyproject.toml` via [uv](https://docs.astral.sh/uv/). Runtime: `numpy`, `scipy`, `control` (python-control, for LQR/LQG/Kalman), `cvxpy` + `osqp` (constrained MPC QP), `matplotlib`, `openai`, `python-dotenv`, `fastapi`, `uvicorn`, `streamlit`. Dev: `pytest`, `httpx`.

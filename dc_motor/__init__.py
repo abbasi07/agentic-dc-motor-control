@@ -16,6 +16,11 @@ from .feasibility import (
     min_time_to_reference,
 )
 from .controllers import PIDController
+from .state_space import (
+    DiscreteStateSpace,
+    StateSpaceModel,
+    motor_state_space,
+)
 from .metrics import step_performance_metrics
 from .scenarios import (
     Scenario,
@@ -60,6 +65,9 @@ __all__ = [
     "check_feasibility",
     "min_time_to_reference",
     "PIDController",
+    "DiscreteStateSpace",
+    "StateSpaceModel",
+    "motor_state_space",
     "step_performance_metrics",
     "Scenario",
     "default_scenarios",

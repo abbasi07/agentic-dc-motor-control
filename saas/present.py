@@ -84,8 +84,13 @@ SCENARIO_LABEL = {
 CONTROLLER_LABEL = {
     "pid": "PID speed controller",
     "robust_pid": "Robust PID",
+    "lqr": "LQR (optimal state feedback)",
+    "lqg": "LQG (LQR + Kalman filter)",
     "mpc": "Model predictive control (MPC)",
+    "mrac": "Adaptive control (MRAC)",
+    "fuzzy_pid": "Fuzzy PID",
     "adaptive_pid": "Adaptive PID",
+    "plant_id": "Plant identification (interim PID)",
 }
 
 FEEDBACK_ACTION_LABEL = {
@@ -96,7 +101,11 @@ FEEDBACK_ACTION_LABEL = {
     "add_disturbance": "Add a load-disturbance test",
     "tune_again": "Retune the controller gains",
     "call_robust": "Try a robust controller",
+    "call_lqr": "Try an LQR (optimal state feedback)",
+    "call_lqg": "Try an LQG (optimal + Kalman filter)",
     "call_mpc": "Try MPC",
+    "call_mrac": "Try adaptive control (MRAC)",
+    "call_fuzzy": "Try a fuzzy PID",
     "call_rl": "Try an adaptive controller",
     "reinterpret_spec": "Re-read your requirements",
     "unclear": "Could not understand the request",
@@ -172,10 +181,16 @@ def feedback_plan_message(plan: dict[str, Any]) -> str:
         return "I'll relax the settling-time requirement slightly and redesign."
     if action == "call_robust":
         return "I'll try a more robust controller aimed at plant uncertainty."
+    if action == "call_lqr":
+        return "I'll try an LQR (optimal state feedback with integral action) for tighter tracking."
+    if action == "call_lqg":
+        return "I'll try an LQG (LQR plus a Kalman filter) to stay robust under measurement noise."
     if action == "call_mpc":
         return "I'll try model predictive control to respect voltage limits more carefully."
-    if action == "call_rl":
-        return "I'll try an adaptive controller for changing conditions."
+    if action in ("call_mrac", "call_rl"):
+        return "I'll try an adaptive controller (MRAC) that tunes itself online for changing conditions."
+    if action == "call_fuzzy":
+        return "I'll try a fuzzy PID that schedules its gains by tracking-error magnitude."
     if action == "expand_scenarios":
         return "I'll add tougher simulation tests and redesign against them."
     if action == "add_disturbance":

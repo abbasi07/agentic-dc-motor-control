@@ -19,17 +19,18 @@ FAILURE_TAGS = (
     "RECOVERY_SLOW",
 )
 
-# Tag -> suggested redesign action (documented policy for LLM + heuristic)
+# Tag -> suggested redesign action (documented policy for LLM + heuristic).
+# Ordered from cheapest/most-targeted to more structural (switch controller family).
 TAG_TO_ACTION_HINTS: dict[str, list[str]] = {
-    "TRACKING_SLOW": ["tune_pid_scipy", "tune_pid_auto"],
-    "OVERSHOOT": ["tune_pid_grid", "call_robust"],
-    "DISTURBANCE_REJECT_FAIL": ["tune_pid_scipy", "call_mpc", "call_rl"],
-    "FRAGILE_TO_MISMATCH": ["call_robust", "expand_scenarios"],
-    "NOISE_SENSITIVE": ["call_robust", "tune_pid_grid"],
+    "TRACKING_SLOW": ["tune_pid_scipy", "tune_pid_auto", "call_lqr"],
+    "OVERSHOOT": ["tune_pid_grid", "call_lqr", "call_fuzzy", "call_robust"],
+    "DISTURBANCE_REJECT_FAIL": ["tune_pid_scipy", "call_lqr", "call_mpc", "call_mrac"],
+    "FRAGILE_TO_MISMATCH": ["call_robust", "call_lqg", "call_mrac", "expand_scenarios"],
+    "NOISE_SENSITIVE": ["call_lqg", "call_robust", "tune_pid_grid"],
     "SATURATION_HEAVY": ["call_mpc", "call_robust"],
-    "MODEL_DISTRUST": ["identify_plant", "call_robust", "expand_scenarios"],
+    "MODEL_DISTRUST": ["identify_plant", "call_lqg", "call_mrac", "call_robust", "expand_scenarios"],
     "POSSIBLY_INFEASIBLE_SPEC": ["relax_settling_for_load"],
-    "RECOVERY_SLOW": ["tune_pid_scipy", "call_mpc", "call_rl"],
+    "RECOVERY_SLOW": ["tune_pid_scipy", "call_lqr", "call_mpc", "call_mrac"],
 }
 
 

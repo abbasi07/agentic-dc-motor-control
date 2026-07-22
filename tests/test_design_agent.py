@@ -146,7 +146,7 @@ def test_export_gate_allows_certified_design(tmp_path):
 def test_design_specialist_types_store_scorecard():
     session = DesignAgentSession.create(plant_id="dc_motor_ctms")
     session.load_spec(_easy_step_spec())
-    for ctype in ("robust", "mpc", "adaptive"):
+    for ctype in ("robust", "lqr", "lqg", "mpc", "mrac", "fuzzy", "adaptive"):
         out = session.design_controller(controller_type=ctype)
         assert out["controller_type"] == ctype
         assert session.job.scorecard is not None

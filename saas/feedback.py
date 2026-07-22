@@ -23,7 +23,11 @@ FeedbackAction = Literal[
     "add_disturbance",
     "tune_again",
     "call_robust",
+    "call_lqr",
+    "call_lqg",
     "call_mpc",
+    "call_mrac",
+    "call_fuzzy",
     "call_rl",
     "reinterpret_spec",
     "unclear",
@@ -56,13 +60,26 @@ def heuristic_feedback_plan(text: str) -> dict[str, Any]:
             "params": {"scenarios": ["load_disturbance"]},
         }
 
+    # Specific controller families first (before broader robust/mpc keywords).
+    if any(w in t for w in ("lqg", "kalman")):
+        return {"action": "call_lqg", "reason": "User asked for LQG / Kalman estimation.", "params": {}}
+
+    if any(w in t for w in ("lqr", "optimal control", "state feedback")):
+        return {"action": "call_lqr", "reason": "User asked for LQR / optimal state feedback.", "params": {}}
+
+    if "fuzzy" in t:
+        return {"action": "call_fuzzy", "reason": "User asked for a fuzzy controller.", "params": {}}
+
+    if any(w in t for w in ("mrac", "model reference", "adaptive", "self-tuning", "self tuning")):
+        return {"action": "call_mrac", "reason": "User asked for adaptive / MRAC control.", "params": {}}
+
     if any(w in t for w in ("mismatch", "robust", "uncertainty", "fragile")):
         return {"action": "call_robust", "reason": "User asked for robustness.", "params": {}}
 
-    if any(w in t for w in ("mpc", "constraint", "saturation", "voltage limit")):
+    if any(w in t for w in ("mpc", "predictive", "constraint", "saturation", "voltage limit")):
         return {"action": "call_mpc", "reason": "User asked for MPC / constraint handling.", "params": {}}
 
-    if any(w in t for w in ("adaptive", "learn", "rl", "varying load")):
+    if any(w in t for w in ("learn", "rl", "varying load")):
         return {"action": "call_rl", "reason": "User asked for adaptive control.", "params": {}}
 
     if any(w in t for w in ("noise", "noisy", "expand scenario", "more scenarios", "stress", "tougher")):

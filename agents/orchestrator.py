@@ -20,9 +20,20 @@ from dc_motor.plant import CTMS_PARAMS, MotorParams
 from dc_motor.scenarios import scenarios_from_spec
 from dc_motor.specs import DesignSpec, validate_and_clamp_design_spec
 
+from .controller_registry import SPECIALIST_ACTIONS, registry_metadata
+from .critic import diagnose
 from .design_candidate import DesignCandidate, candidate_from_controller, candidate_from_tune_result
 from .pid_tuner import grid_search_pid, optimize_pid, tune_pid
-from .specialists import design_adaptive, design_mpc, design_robust_pid, run_identify_plant
+from .specialists import (
+    design_adaptive,
+    design_fuzzy,
+    design_lqg,
+    design_lqr,
+    design_mpc,
+    design_mrac,
+    design_robust_pid,
+    run_identify_plant,
+)
 from .spec_agent import interpret_spec, llm_unavailable_message
 
 load_dotenv()
@@ -42,8 +53,12 @@ AVAILABLE_ACTIONS = (
     "expand_scenarios",
     "relax_settling_for_load",
     "call_robust",
+    "call_lqr",
+    "call_lqg",
     "call_mpc",
-    "call_rl",
+    "call_mrac",
+    "call_fuzzy",
+    "call_rl",  # legacy alias for the adaptive family (-> MRAC)
     "identify_plant",
     "stop",
 )
@@ -227,6 +242,19 @@ def relax_settling_for_load(spec: DesignSpec, *, new_limit: float = 2.5) -> Desi
     return validate_and_clamp_design_spec(updated)
 
 
+# Orchestrator action -> specialist designer. call_rl is a legacy alias for the
+# adaptive family, which is now a proper MRAC (design_mrac == design_adaptive).
+_SPECIALIST_DESIGNERS = {
+    "call_robust": design_robust_pid,
+    "call_lqr": design_lqr,
+    "call_lqg": design_lqg,
+    "call_mpc": design_mpc,
+    "call_mrac": design_mrac,
+    "call_fuzzy": design_fuzzy,
+    "call_rl": design_adaptive,
+}
+
+
 def _execute_action(
     plan: ActionPlan,
     state: _SessionState,
@@ -313,22 +341,14 @@ def _execute_action(
         state.best = _better(state.best, cand)
         state.last_digest = state.best.failure_digest
         notes = result.notes
-    elif action == "call_robust":
-        cand = design_robust_pid(
-            state.spec, base_params=base_params, seed=seed, plant_factory=plant_factory
-        )
-        n_eval = cand.n_evaluations
-        state.best = _better(state.best, cand)
-        state.last_digest = state.best.failure_digest
-        notes = cand.notes
-    elif action == "call_mpc":
-        cand = design_mpc(state.spec, base_params=base_params, plant_factory=plant_factory)
-        n_eval = cand.n_evaluations
-        state.best = _better(state.best, cand)
-        state.last_digest = state.best.failure_digest
-        notes = cand.notes
-    elif action == "call_rl":
-        cand = design_adaptive(state.spec, base_params=base_params, plant_factory=plant_factory)
+    elif action in _SPECIALIST_DESIGNERS:
+        designer = _SPECIALIST_DESIGNERS[action]
+        if action == "call_robust":
+            cand = designer(
+                state.spec, base_params=base_params, seed=seed, plant_factory=plant_factory
+            )
+        else:
+            cand = designer(state.spec, base_params=base_params, plant_factory=plant_factory)
         n_eval = cand.n_evaluations
         state.best = _better(state.best, cand)
         state.last_digest = state.best.failure_digest
@@ -366,6 +386,12 @@ def _execute_action(
 
 
 def heuristic_choose_action(state: _SessionState) -> ActionPlan:
+    """Hand-coded diagnose→redesign policy (ablation B; no LLM).
+
+    Uses the grounded critic to translate the current FailureDigest into an ordered
+    list of candidate actions (tag hints first, then controller families whose
+    strengths match the failure pattern), skipping anything already tried.
+    """
     digest = state.last_digest
     tried = set(state.actions_tried)
 
@@ -390,50 +416,51 @@ def heuristic_choose_action(state: _SessionState) -> ActionPlan:
                 "Spec relaxed; re-run auto-tune under updated constraints.",
             )
 
-    if digest is not None and digest.action_hints:
-        for hint in digest.action_hints:
-            if hint not in tried and hint in AVAILABLE_ACTIONS and hint != "stop":
+    # Grounded diagnosis: ordered recommended actions (hints + matching families).
+    if state.best is not None:
+        diag = diagnose(state.best, state.spec, tried_actions=tuple(state.actions_tried))
+        for action in diag.recommended_actions:
+            if action not in tried and action in AVAILABLE_ACTIONS and action != "stop":
                 return ActionPlan(
-                    hint,
-                    f"Heuristic follows tag hint from {digest.tags}: try {hint}.",
+                    action,
+                    f"Critic: tags={diag.tags} → try {action}.",
+                    {"maxiter": 12} if action == "tune_pid_scipy" else {},
                 )
 
-    if "tune_pid_auto" in tried and "tune_pid_scipy" not in tried:
-        if digest is not None and not digest.all_pass:
-            return ActionPlan(
-                "tune_pid_scipy",
-                "Auto-tune still failing; SciPy refine.",
-                {"maxiter": 12},
-            )
-
-    if digest is not None and "FRAGILE_TO_MISMATCH" in digest.tags and "call_robust" not in tried:
-        return ActionPlan("call_robust", "Mismatch fragility → robust specialist.")
-
-    if digest is not None and "DISTURBANCE_REJECT_FAIL" in digest.tags:
-        if "call_mpc" not in tried:
-            return ActionPlan("call_mpc", "Disturbance rejection fail → MPC specialist.")
-        if "call_rl" not in tried:
-            return ActionPlan("call_rl", "Persistent disturbance → adaptive specialist.")
-
-    if digest is not None and "MODEL_DISTRUST" in digest.tags and "identify_plant" not in tried:
-        return ActionPlan("identify_plant", "Model distrust → simulation plant ID.")
+    # Last-resort refine if a SciPy pass was never attempted.
+    if "tune_pid_scipy" not in tried and digest is not None and not digest.all_pass:
+        return ActionPlan("tune_pid_scipy", "Fallback: SciPy refine before stopping.", {"maxiter": 12})
 
     return ActionPlan("stop", "Heuristic policy exhausted available tools.")
 
 
+def _controller_menu() -> str:
+    lines = []
+    for fam in registry_metadata():
+        lines.append(
+            f"- {fam['action']}: {fam['label']} — {fam['description']} "
+            f"(good for {fam['addresses_tags']})"
+        )
+    return "\n".join(lines)
+
+
 def _orchestrator_system_prompt() -> str:
     return f"""You are the adaptive control-design orchestrator for a DC motor SPEED simulation.
-Choose the NEXT tool action only. Never invent gains, metrics, or pass/fail.
+Choose the NEXT tool action only. Never invent gains, metrics, or pass/fail — the
+tools compute every number and you read them from the state you are given.
 
 Available actions: {list(AVAILABLE_ACTIONS)}
 
-Specialists:
-- call_robust: detuned/robust PID emphasizing mismatch
-- call_mpc: short-horizon voltage MPC with input bounds
-- call_rl: adaptive Ki PID (sim learning under load)
-- identify_plant: open-loop sim identification experiment
+Controller families (each is a real design tool behind reset()/step()):
+{_controller_menu()}
 
-Also: tune_pid_grid/scipy/auto, expand_scenarios, relax_settling_for_load, stop.
+Other actions: tune_pid_grid/scipy/auto (PID search), expand_scenarios,
+relax_settling_for_load, identify_plant (sim ID), stop.
+
+Policy: diagnose the failure pattern, then either tweak parameters (tune_pid_*),
+switch controller structure to a family whose strengths match the failing tags, or
+relax a physically infeasible spec. Prefer the grounded diagnosis 'recommended_actions'
+unless you have a better justification.
 
 Tag→action hints: {json.dumps(TAG_TO_ACTION_HINTS)}
 
@@ -467,6 +494,13 @@ def llm_choose_action(
         "best_all_pass": None if state.best is None else state.best.failure_digest.all_pass,
         "best_objective": None if state.best is None else state.best.objective,
         "failure_digest": None if state.last_digest is None else state.last_digest.to_dict(),
+        "diagnosis": (
+            None
+            if state.best is None
+            else diagnose(
+                state.best, state.spec, tried_actions=tuple(state.actions_tried)
+            ).to_dict()
+        ),
         "available_actions": list(AVAILABLE_ACTIONS),
     }
     response = client.chat.completions.create(

@@ -4,7 +4,8 @@ PROJECT CONTINUITY BRIEF — Agentic Orchestration of DC Motor Control
 Purpose: Hand this file to a new chat if the current conversation runs out of
 context/tokens. It captures decisions, current state, and the planned sequence.
 
-Last updated: 2026-07-22 (repo purge: notebooks removed; examples/ + saas/ canonical)
+Last updated: 2026-07-22 (workstream C: pluggable controller registry + real
+LQR/LQG, constrained MPC, MRAC, Fuzzy PID; grounded critic; orchestrator wiring)
 Repo: https://github.com/abbasi07/agentic-dc-motor-control
 Local path: E:\Agentic AI Course\Projects\1_Agentic_Orchestration_of_DC_Motor_Control
 
@@ -176,8 +177,9 @@ Transfer function (speed from voltage):
 [x] Repo purge: Lab_*.ipynb removed; examples/ are canonical demos
 [x] Generalized arbitrary-motor plant + physics feasibility (workstreams A + B)
 [x] Chat-first tool-calling Design Agent + grounded query_results (workstream D)
-[ ] Controller registry + real controllers: LQR/LQG, proper MPC, MRAC, Fuzzy (workstream C) — NEXT
-[ ] Multi-tenant SaaS (auth / billing) — optional later
+[x] Controller registry + real controllers: LQR/LQG, proper MPC, MRAC, Fuzzy (workstream C)
+[ ] SaaS hardening: persistence, auth/multi-tenant, async runs, budgets (workstream E) — NEXT
+[ ] Agent eval harness extensions (workstream F) — throughout
 
 
 --------------------------------------------------------------------------------
@@ -347,10 +349,23 @@ llm_unavailable_message and fail clearly.
 8. PACKAGE / SCRIPT LAYOUT
 --------------------------------------------------------------------------------
 DONE (canonical Python package layout):
-  dc_motor/       — plant, motor_model, feasibility, controllers, metrics, scenarios, evaluate,
-                    specs, failure, registry
-  agents/         — spec_agent, plant_agent, pid_tuner, orchestrator, specialists, certify,
-                    design_candidate, design_agent (chat-first tool-calling loop)
+  dc_motor/       — plant, motor_model, state_space, feasibility, controllers, metrics,
+                    scenarios, evaluate, specs, failure, registry (plants)
+  agents/         — spec_agent, plant_agent, pid_tuner, orchestrator, controller_registry,
+                    specialists (designers), controllers_advanced (LQR/LQG/MPC/MRAC/Fuzzy),
+                    critic (grounded diagnosis), certify, design_candidate, design_agent
+                    (chat-first tool-calling loop)
+
+  Deps added for workstream C: python-control (LQR/LQG/Kalman), cvxpy + osqp
+  (constrained MPC QP). MRAC + Fuzzy PID are lean hand-rolled numpy (no framework).
+
+  Controller families behind one reset()/step() interface, registered in
+  agents/controller_registry.py (kind -> designer + metadata):
+    pid, robust_pid, lqr, lqg, mpc, mrac (adaptive alias), fuzzy_pid.
+  Each is also an orchestrator action (call_lqr/call_lqg/call_mpc/call_mrac/
+  call_fuzzy/call_robust) wired into AVAILABLE_ACTIONS + TAG_TO_ACTION_HINTS +
+  heuristic/LLM menus, so auto-redesign can switch STRUCTURE (not just gains).
+  RL remains roadmap-only (deferred).
   experiments/    — ablation runners, NL-spec benchmark suite (+ comparison table)
   examples/       — runnable lab_01…lab_08 demos (uv run python examples/lab_0N_*.py)
   saas/           — Design Copilot: FastAPI jobs API (+ POST /jobs/{id}/agent) + Streamlit UI

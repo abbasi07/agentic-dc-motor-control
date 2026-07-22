@@ -5,10 +5,13 @@ description = "Agentic orchestration of DC motor control — from plant model to
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "control>=0.10.1",
+    "cvxpy>=1.5.0",
     "fastapi>=0.115.0",
     "matplotlib>=3.11.1",
     "numpy>=2.5.1",
     "openai>=2.46.0",
+    "osqp>=0.6.7",
     "python-dotenv>=1.2.2",
     "scipy>=1.18.0",
     "streamlit>=1.40.0",

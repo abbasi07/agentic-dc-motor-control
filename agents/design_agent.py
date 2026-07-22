@@ -41,16 +41,16 @@ from dc_motor.scenarios import scenarios_from_spec
 from dc_motor.specs import DesignSpec, design_spec_from_dict
 
 from .certify import certify_candidate
-from .design_candidate import DesignCandidate, candidate_from_controller, candidate_from_tune_result
+from .controller_registry import CONTROLLER_TYPE_NAMES, design_by_type
+from .design_candidate import DesignCandidate, candidate_from_controller
 from .orchestrator import DesignSession, grounded_rationale
-from .pid_tuner import tune_pid
 from .spec_agent import DEFAULT_MODEL, interpret_spec, llm_unavailable_message
-from .specialists import design_adaptive, design_mpc, design_robust_pid
 
 load_dotenv()
 
-# Controller families a user can explicitly pick (design_controller(type=...)).
-CONTROLLER_TYPES = ("auto", "pid", "robust", "mpc", "adaptive")
+# Controller families a user can explicitly pick (design_controller(type=...)),
+# sourced from the pluggable controller registry ("auto" runs the orchestrator).
+CONTROLLER_TYPES = CONTROLLER_TYPE_NAMES
 
 # Digit-free scenario phrases so grounded answers never emit a stray number that is
 # not actually a measured value (e.g. the "1" inside "step_1rads").
@@ -386,18 +386,11 @@ class DesignAgentSession:
         base_params,
         plant_factory,
     ) -> DesignCandidate:
-        if controller_type == "pid":
-            result = tune_pid(
-                spec, method="auto", base_params=base_params, plant_factory=plant_factory
-            )
-            return candidate_from_tune_result(result)
-        if controller_type == "robust":
-            return design_robust_pid(spec, base_params=base_params, plant_factory=plant_factory)
-        if controller_type == "mpc":
-            return design_mpc(spec, base_params=base_params, plant_factory=plant_factory)
-        if controller_type == "adaptive":
-            return design_adaptive(spec, base_params=base_params, plant_factory=plant_factory)
-        raise ValueError(f"Unhandled controller_type {controller_type!r}")
+        # Dispatch to the pluggable controller registry (pid/robust/lqr/lqg/mpc/
+        # mrac/fuzzy + aliases). "auto" is handled by the orchestrator upstream.
+        return design_by_type(
+            controller_type, spec, base_params=base_params, plant_factory=plant_factory
+        )
 
     def _store_session(self, session: DesignSession) -> None:
         job = self.job
