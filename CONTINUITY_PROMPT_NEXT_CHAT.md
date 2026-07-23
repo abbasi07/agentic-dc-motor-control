@@ -1,6 +1,38 @@
 # Continuity prompt — paste into a new chat
 
-> **Status (2026-07-23) — Phase E2.4 (Live events: SSE + Redis pub/sub) DONE.** The API
+> **Status (2026-07-23) — Phase E2.5 (API-key auth + multi-tenant + rate limits +
+> budgets) DONE.** All `/jobs` routes now authenticate + scope by tenant. New:
+> `saas/auth.py` — `AuthManager` (peppered SHA-256 `hash_key`; `create_api_key` returns
+> the RAW key once and stores only the hash; `verify_api_key` = one indexed lookup that
+> touches `last_used_at`; `seed_dev_api_key` idempotently registers
+> `COPILOT_DEV_API_KEY` on the dev tenant) + `get_auth_manager()` + `BudgetExceeded`.
+> `saas/ratelimit.py` — `RateLimiter` (fixed-window per-tenant Redis `INCR`+`EXPIRE`,
+> **fail-open** on broker errors) + `get_rate_limiter()`. `saas/api.py` — `require_tenant`
+> FastAPI dependency (auth OFF → dev tenant; ON → Bearer key required, 401 on
+> missing/invalid, per-tenant 429 rate limit) applied to EVERY `/jobs` route; lifespan
+> seeds the dev key when auth+persistence on; agent route maps `BudgetExceeded`→429.
+> `saas/config.py` — `auth_enabled` (`COPILOT_AUTH`, default False) + `api_key_pepper`
+> (`COPILOT_API_KEY_PEPPER`). Store scoping: `JobStore`/`JobRepository` `get(job_id,
+> tenant_id=None)` raise KeyError (→404, no existence leak) + `list_jobs(tenant_id=None)`
+> filter; `JobRepository.create` now ensures the tenant row (FK). Budgets: service
+> `budget_limits()` + `_capped_iterations` (clamps design runs to `max_design_iterations`)
+> + token-budget guard in `agent_chat` (blocks before the model call when
+> `max_tokens_per_session` spent); `agents/workflow.py` `budgets()`/`build_workspace()`
+> take `limits` (injected by the service — agents/ stays decoupled from saas.config) and
+> surface `max_tokens_per_session`/`max_design_iterations`/`rate_limit_per_minute`/
+> `tokens_remaining` read-only (tokens_used also falls back to persisted agent_state).
+> Compose api sets `COPILOT_AUTH=true`; `.env.example` documents `COPILOT_AUTH` +
+> `COPILOT_API_KEY_PEPPER`. No migration needed (api_keys + design_jobs.tenant_id already
+> in `9f31d5435fda`). `tests/test_auth.py` (+19): hashing/create/verify/inactive/seed,
+> repo+store tenant scoping, rate limiter allow→block+fail-open, route 401/404/429, budget
+> surfacing + enforcement + iteration cap — all fakeredis + SQLite, OpenAI-free.
+> **177 tests pass** (was 158). NEXT: **E2.6** — verify `docker compose up` healthy
+> end-to-end (create→interpret[mock]→run enqueues→worker completes→poll→SSE→export
+> cross-process, now with a Bearer key), then **E3** (React/Next two-pane UI over the SSE
+> stream). F throughout.
+>
+> ---
+> **Prior status (2026-07-23) — Phase E2.4 (Live events: SSE + Redis pub/sub) DONE.** The API
 > (chat loop) and the RQ worker (design run) now publish structured events over Redis
 > pub/sub and clients stream them via SSE, so any connected browser sees progress
 > regardless of which process produced the event. New: `saas/events.py` — `EventBus`

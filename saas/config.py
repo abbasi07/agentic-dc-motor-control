@@ -32,8 +32,17 @@ class Settings:
     design_queue: str
     openai_api_key: str | None
     openai_model: str
+    # E2.5 auth: when enabled, every /jobs route requires ``Authorization: Bearer <key>``
+    # (hashed API keys in Postgres) and is scoped to the key's tenant; Redis per-tenant
+    # rate limits apply. Off by default so host tools / the OpenAI-free test-suite reach
+    # the API unauthenticated (tenant falls back to the dev tenant). Needs persistence
+    # (the api_keys table lives in the DB). Compose sets it true.
+    auth_enabled: bool
     # Dev bootstrap API key seeded on startup so local/demo use needs no signup.
     dev_api_key: str | None
+    # Server-side secret ("pepper") mixed into the API-key hash so the DB never stores a
+    # value that reverses to the raw key. Override in production via COPILOT_API_KEY_PEPPER.
+    api_key_pepper: str
     # Background guardrails (budgets); surfaced read-only in the workspace.
     max_tokens_per_session: int
     max_design_iterations: int
@@ -88,7 +97,9 @@ def get_settings() -> Settings:
         design_queue=os.getenv("DESIGN_QUEUE", _DESIGN_QUEUE),
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-5.4-nano"),
+        auth_enabled=_bool_env("COPILOT_AUTH", False),
         dev_api_key=os.getenv("COPILOT_DEV_API_KEY"),
+        api_key_pepper=os.getenv("COPILOT_API_KEY_PEPPER", "copilot-dev-pepper"),
         max_tokens_per_session=_int_env("MAX_TOKENS_PER_SESSION", 200_000),
         max_design_iterations=_int_env("MAX_DESIGN_ITERATIONS", 12),
         rate_limit_per_minute=_int_env("RATE_LIMIT_PER_MINUTE", 60),

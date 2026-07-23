@@ -180,16 +180,46 @@ def _export_artifact(job: Any) -> dict[str, Any] | None:
     return {"path": str(path), "status": getattr(job, "status", None)}
 
 
-def budgets(job: Any, *, session: Any = None) -> dict[str, Any]:
-    """Token + iteration budget usage (background guardrails, surfaced read-only)."""
-    tokens_used = int(getattr(session, "total_tokens", 0) or 0) if session is not None else 0
-    return {
+def _tokens_used(job: Any, session: Any) -> int:
+    """Tokens spent by the chat-first agent.
+
+    Prefer a live session's counter; fall back to the persisted ``agent_state`` so the
+    budget still reflects reality after a rehydrate (no live session in this process).
+    """
+    if session is not None:
+        return int(getattr(session, "total_tokens", 0) or 0)
+    state = getattr(job, "agent_state", None) or {}
+    return int(state.get("total_tokens", 0) or 0)
+
+
+def budgets(
+    job: Any, *, session: Any = None, limits: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Token + iteration budget usage (background guardrails, surfaced read-only).
+
+    ``limits`` (injected by the service layer from settings — kept OUT of ``agents/`` so
+    this module stays decoupled from ``saas.config``) adds the configured caps and the
+    remaining token allowance so the UI can show budget pressure. The LLM never sets
+    these numbers.
+    """
+    tokens_used = _tokens_used(job, session)
+    out: dict[str, Any] = {
         "tokens_used": tokens_used,
         "max_iterations": int(getattr(job, "max_iterations", 0) or 0),
     }
+    if limits:
+        max_tokens = limits.get("max_tokens_per_session")
+        out["max_tokens_per_session"] = max_tokens
+        out["max_design_iterations"] = limits.get("max_design_iterations")
+        out["rate_limit_per_minute"] = limits.get("rate_limit_per_minute")
+        if isinstance(max_tokens, (int, float)):
+            out["tokens_remaining"] = max(0, int(max_tokens) - tokens_used)
+    return out
 
 
-def build_workspace(job: Any, *, session: Any = None) -> dict[str, Any]:
+def build_workspace(
+    job: Any, *, session: Any = None, limits: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Reflect-only projection of the session for the frontend.
 
     Only artifacts that currently exist are included, so the UI can render panels
@@ -216,7 +246,7 @@ def build_workspace(job: Any, *, session: Any = None) -> dict[str, Any]:
         "status": getattr(job, "status", None),
         "artifacts": artifacts,
         "open_tabs": list(artifacts.keys()),
-        "budgets": budgets(job, session=session),
+        "budgets": budgets(job, session=session, limits=limits),
         "error": getattr(job, "error", None),
     }
 

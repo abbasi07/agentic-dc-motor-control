@@ -47,6 +47,12 @@ services:
       COPILOT_ASYNC_RUNS: "true"
       # E2.4: publish live events over Redis pub/sub + serve the SSE stream endpoint.
       COPILOT_EVENTS: "true"
+      # E2.5: require Bearer API keys + per-tenant scoping + Redis rate limits. The dev
+      # bootstrap key is seeded on startup so the stack is usable out of the box; override
+      # COPILOT_DEV_API_KEY / COPILOT_API_KEY_PEPPER in .env for anything real.
+      COPILOT_AUTH: "true"
+      COPILOT_DEV_API_KEY: ${COPILOT_DEV_API_KEY:-dev-local-key}
+      COPILOT_API_KEY_PEPPER: ${COPILOT_API_KEY_PEPPER:-copilot-dev-pepper}
       # Windows-friendly file watching for --reload across the bind mount.
       WATCHFILES_FORCE_POLLING: "true"
     volumes:

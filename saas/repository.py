@@ -63,12 +63,19 @@ class JobRepository:
     # Bootstrap
     # ------------------------------------------------------------------ #
     def ensure_default_tenant(self) -> str:
+        return self.ensure_tenant(DEFAULT_TENANT_ID, DEFAULT_TENANT_NAME)
+
+    def ensure_tenant(self, tenant_id: str, name: str | None = None) -> str:
+        """Idempotently create a tenant row (keeps the design_jobs FK satisfiable)."""
         with self._sf() as session:
-            tenant = session.get(Tenant, DEFAULT_TENANT_ID)
+            tenant = session.get(Tenant, tenant_id)
             if tenant is None:
-                session.add(Tenant(id=DEFAULT_TENANT_ID, name=DEFAULT_TENANT_NAME))
+                default_name = (
+                    DEFAULT_TENANT_NAME if tenant_id == DEFAULT_TENANT_ID else tenant_id
+                )
+                session.add(Tenant(id=tenant_id, name=name or default_name))
                 session.commit()
-        return DEFAULT_TENANT_ID
+        return tenant_id
 
     # ------------------------------------------------------------------ #
     # CRUD
@@ -80,18 +87,28 @@ class JobRepository:
         mode: str = "heuristic",
         tenant_id: str | None = None,
     ) -> DesignJob:
-        tenant_id = tenant_id or self.ensure_default_tenant()
+        # Guarantee the tenant row exists so the design_jobs FK holds (the auth path
+        # already creates real tenants; this covers the dev tenant + direct callers).
+        tenant_id = self.ensure_tenant(tenant_id) if tenant_id else self.ensure_default_tenant()
         job = DesignJob(
             job_id=str(uuid.uuid4()), plant_id=plant_id, mode=mode, tenant_id=tenant_id
         )
         self.save(job)
         return job
 
-    def get(self, job_id: str) -> DesignJob:
+    def get(self, job_id: str, tenant_id: str | None = None) -> DesignJob:
         with self._lock:
             with self._sf() as session:
                 row = session.get(DesignJobRow, job_id)
                 if row is None:
+                    raise KeyError(f"Unknown job_id={job_id}")
+                # Tenant scoping (E2.5): raise KeyError (surfaced as 404) rather than a
+                # 403 so job existence never leaks across tenants.
+                if (
+                    tenant_id is not None
+                    and row.tenant_id is not None
+                    and row.tenant_id != tenant_id
+                ):
                     raise KeyError(f"Unknown job_id={job_id}")
                 cached = self._cache.get(job_id)
                 # Reuse the live object (keeps _session/_agent) only if it is not stale.
@@ -126,11 +143,14 @@ class JobRepository:
             self._cache[job.job_id] = job
         return job
 
-    def list_jobs(self) -> list[DesignJob]:
+    def list_jobs(self, tenant_id: str | None = None) -> list[DesignJob]:
         with self._lock:
             with self._sf() as session:
+                stmt = select(DesignJobRow)
+                if tenant_id is not None:
+                    stmt = stmt.where(DesignJobRow.tenant_id == tenant_id)
                 rows = session.execute(
-                    select(DesignJobRow).order_by(DesignJobRow.created_at)
+                    stmt.order_by(DesignJobRow.created_at)
                 ).scalars().all()
                 jobs: list[DesignJob] = []
                 for row in rows:

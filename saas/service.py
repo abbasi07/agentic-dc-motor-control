@@ -68,6 +68,39 @@ def create_job(
 
 
 # --------------------------------------------------------------------------- #
+# Budgets (E2.5) — background guardrails read from settings; surfaced read-only in the
+# workspace and enforced on the chat / design paths. Numbers here are limits, not
+# tool-computed metrics, so they never touch the grounding contract.
+# --------------------------------------------------------------------------- #
+def budget_limits() -> dict[str, Any]:
+    """The configured token / iteration / rate limits (from settings)."""
+    from .config import get_settings
+
+    s = get_settings()
+    return {
+        "max_tokens_per_session": s.max_tokens_per_session,
+        "max_design_iterations": s.max_design_iterations,
+        "rate_limit_per_minute": s.rate_limit_per_minute,
+    }
+
+
+def _tokens_used(job: DesignJob) -> int:
+    if job._agent is not None:
+        return int(getattr(job._agent, "total_tokens", 0) or 0)
+    return int((job.agent_state or {}).get("total_tokens", 0) or 0)
+
+
+def _capped_iterations(iters: int) -> int:
+    """Clamp a requested iteration count to the configured design-iteration budget."""
+    from .config import get_settings
+
+    cap = get_settings().max_design_iterations
+    if cap and iters > cap:
+        return int(cap)
+    return int(iters)
+
+
+# --------------------------------------------------------------------------- #
 # Custom DC motor (chat-defined plant)
 # --------------------------------------------------------------------------- #
 def _record_motor(job: DesignJob, motor: MotorModel) -> DesignJob:
@@ -238,6 +271,7 @@ def confirm_and_run(
     _publish_run_status(job)  # queued/inline -> running (worker or API process)
     _publish_workspace(job)
     iters = max_iterations if max_iterations is not None else job.max_iterations
+    iters = _capped_iterations(iters)  # background guardrail: max_design_iterations
 
     # A chat-defined custom motor overrides the registry plant: pass MotorParams
     # directly (plant_id=None) so the engine simulates the user's actual motor.
@@ -457,6 +491,18 @@ def get_agent_session(job: DesignJob):
 
 def agent_chat(job: DesignJob, message: str) -> DesignJob:
     """Send one message to the tool-calling Design Agent (OpenAI-only chat loop)."""
+    # Background guardrail: refuse a new turn once the session's token budget is spent
+    # (checked BEFORE the model call so we never overshoot). Surfaced read-only in the
+    # workspace budgets so the UI can warn ahead of time.
+    from .auth import BudgetExceeded
+    from .config import get_settings
+
+    max_tokens = get_settings().max_tokens_per_session
+    if max_tokens and _tokens_used(job) >= max_tokens:
+        raise BudgetExceeded(
+            f"Token budget exhausted for this session ({max_tokens} tokens). "
+            "Start a new design job to continue."
+        )
     session = get_agent_session(job)
     try:
         session.chat(message)
@@ -475,7 +521,7 @@ def workspace_for_job(job: DesignJob) -> dict[str, Any]:
     """Reflect-only workspace snapshot (phase + artifacts) for the frontend."""
     from agents.workflow import build_workspace
 
-    return build_workspace(job, session=job._agent)
+    return build_workspace(job, session=job._agent, limits=budget_limits())
 
 
 def scorecard_json_for_job(job: DesignJob) -> str | None:
@@ -492,6 +538,7 @@ __all__ = [
     "agent_chat",
     "answer_clarification",
     "apply_feedback_and_maybe_rerun",
+    "budget_limits",
     "confirm_and_run",
     "create_job",
     "effective_motor_params",

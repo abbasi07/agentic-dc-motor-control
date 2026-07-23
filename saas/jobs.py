@@ -178,11 +178,16 @@ class JobStore:
             self._jobs[job.job_id] = job
         return job
 
-    def get(self, job_id: str) -> DesignJob:
+    def get(self, job_id: str, tenant_id: str | None = None) -> DesignJob:
         with self._lock:
             if job_id not in self._jobs:
                 raise KeyError(f"Unknown job_id={job_id}")
-            return self._jobs[job_id]
+            job = self._jobs[job_id]
+        # Tenant scoping (E2.5): a caller scoped to a tenant may only see its own jobs.
+        # Raise KeyError (not a 403) so job existence is not leaked across tenants.
+        if tenant_id is not None and job.tenant_id is not None and job.tenant_id != tenant_id:
+            raise KeyError(f"Unknown job_id={job_id}")
+        return job
 
     def save(self, job: DesignJob) -> DesignJob:
         """No-op for the in-memory store (the live object is already retained)."""
@@ -190,9 +195,12 @@ class JobStore:
             self._jobs[job.job_id] = job
         return job
 
-    def list_jobs(self) -> list[DesignJob]:
+    def list_jobs(self, tenant_id: str | None = None) -> list[DesignJob]:
         with self._lock:
-            return list(self._jobs.values())
+            jobs = list(self._jobs.values())
+        if tenant_id is not None:
+            jobs = [j for j in jobs if j.tenant_id == tenant_id]
+        return jobs
 
 
 _STORE: Any = None

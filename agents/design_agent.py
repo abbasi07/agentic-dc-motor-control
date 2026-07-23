@@ -409,7 +409,16 @@ class DesignAgentSession:
 
     def workspace(self) -> dict[str, Any]:
         """Reflect-only workspace snapshot for the frontend (see agents/workflow.py)."""
-        return build_workspace(self.job, session=self)
+        # Pull budget limits from the service layer (kept lazy so agents/ does not import
+        # saas.config directly); best-effort so the agent works even standalone in tests.
+        limits = None
+        try:
+            from saas.service import budget_limits
+
+            limits = budget_limits()
+        except Exception:  # noqa: BLE001 - workspace must never fail on config lookup
+            limits = None
+        return build_workspace(self.job, session=self, limits=limits)
 
     def check_feasibility(self) -> dict[str, Any]:
         """Physics-based feasibility of the current spec on the current motor."""
