@@ -103,7 +103,12 @@ def _capped_iterations(iters: int) -> int:
 # --------------------------------------------------------------------------- #
 # Custom DC motor (chat-defined plant)
 # --------------------------------------------------------------------------- #
-def _record_motor(job: DesignJob, motor: MotorModel) -> DesignJob:
+def _record_motor(
+    job: DesignJob,
+    motor: MotorModel,
+    *,
+    append_chat: bool = True,
+) -> DesignJob:
     job._motor = motor
     job.motor_dict = motor.to_dict()
     job.plant_id = "custom_dc_motor"
@@ -111,28 +116,37 @@ def _record_motor(job: DesignJob, motor: MotorModel) -> DesignJob:
     # prior spec agreement is invalidated because feasibility depends on the motor.
     job.motor_confirmed = False
     job.spec_confirmed = False
-    if motor.warnings:
-        warn_md = "\n".join(f"- {w}" for w in motor.warnings)
-        note = f"\n\nHeads-up on the numbers you gave:\n{warn_md}"
-    else:
-        note = ""
-    chars = motor.to_dict()["characteristics"]
-    job.chat.append(
-        {
-            "role": "assistant",
-            "content": (
-                f"Got it — I set up **{motor.name}** as the plant. "
-                f"It reaches about **{chars['omega_max_rad_s']:.4g} rad/s** at ±{motor.V_max:g} V "
-                f"(dominant time constant ≈ {chars['tau_mech_s']:.4g} s). "
-                "Now tell me the performance you need." + note
-            ),
-        }
-    )
+    if append_chat:
+        # Used by the step-based API / Streamlit path. The chat-first Design Agent
+        # skips this — it phrases a single confirmation reply after define_plant.
+        if motor.warnings:
+            warn_md = "\n".join(f"- {w}" for w in motor.warnings)
+            note = f"\n\nHeads-up on the numbers you gave:\n{warn_md}"
+        else:
+            note = ""
+        chars = motor.to_dict()["characteristics"]
+        job.chat.append(
+            {
+                "role": "assistant",
+                "content": (
+                    f"Recorded **{motor.name}** as the plant "
+                    f"(ω_max ≈ **{chars['omega_max_rad_s']:.4g} rad/s** at ±{motor.V_max:g} V, "
+                    f"τ_mech ≈ {chars['tau_mech_s']:.4g} s). "
+                    "Confirm this model when you're ready, or tell me what to change." + note
+                ),
+            }
+        )
     job.touch()
     return _save(job)
 
 
-def set_motor_from_text(job: DesignJob, text: str, *, append_user: bool = True) -> DesignJob:
+def set_motor_from_text(
+    job: DesignJob,
+    text: str,
+    *,
+    append_user: bool = True,
+    append_chat: bool = True,
+) -> DesignJob:
     """Interpret a natural-language DC-motor description into a custom plant."""
     if append_user:
         job.chat.append({"role": "user", "content": text.strip()})
@@ -142,13 +156,18 @@ def set_motor_from_text(job: DesignJob, text: str, *, append_user: bool = True) 
         job.error = str(exc)
         job.touch()
         raise
-    return _record_motor(job, motor)
+    return _record_motor(job, motor, append_chat=append_chat)
 
 
-def set_motor_from_params(job: DesignJob, params: dict[str, Any]) -> DesignJob:
+def set_motor_from_params(
+    job: DesignJob,
+    params: dict[str, Any],
+    *,
+    append_chat: bool = True,
+) -> DesignJob:
     """Set a custom plant from explicit numeric parameters (no LLM)."""
     motor = motor_model_from_dict(params, source="manual")
-    return _record_motor(job, motor)
+    return _record_motor(job, motor, append_chat=append_chat)
 
 
 def effective_motor_params(job: DesignJob) -> MotorParams:

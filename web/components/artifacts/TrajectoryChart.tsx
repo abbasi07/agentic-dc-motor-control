@@ -35,19 +35,22 @@ function buildRows(series: PlotSeries): Row[] {
   return downsample(rows, 400);
 }
 
-const AXIS = { stroke: "#5b6b82", fontSize: 11 };
-const GRID = "#243044";
+const AXIS = { stroke: "#64748B", fontSize: 11 };
+const GRID = "#334155";
+const REF = "#F59E0B";
+const OMEGA = "#8B5CF6";
+const CTRL = "#10B981";
 
 function ChartTooltip({ active, payload, label, unit }: any) {
   if (!active || !payload?.length) return null;
   return (
-    <div className="rounded-md border border-ink-600 bg-ink-900 px-2.5 py-1.5 text-xs shadow-lg">
+    <div className="rounded-lg border border-ink-600 bg-ink-900 px-2.5 py-1.5 text-xs shadow-xl shadow-black/40">
       <div className="mb-1 font-mono text-slate-400">t = {fmtNum(label, 3)} s</div>
       {payload.map((p: any) => (
         <div key={p.dataKey} className="flex items-center gap-2">
-          <span className="h-2 w-2 rounded-full" style={{ background: p.color }} />
+          <span className="h-1.5 w-1.5 rounded-full" style={{ background: p.color }} />
           <span className="text-slate-300">{p.name}:</span>
-          <span className="font-mono text-slate-100">
+          <span className="font-mono text-cloud">
             {fmtNum(p.value, 3)} {unit}
           </span>
         </div>
@@ -83,7 +86,7 @@ export function TrajectoryChart({ series }: { series: PlotSeries }) {
                 type="monotone"
                 dataKey="reference"
                 name="reference"
-                stroke="#d29922"
+                stroke={REF}
                 strokeDasharray="4 3"
                 dot={false}
                 strokeWidth={1.5}
@@ -93,7 +96,7 @@ export function TrajectoryChart({ series }: { series: PlotSeries }) {
                 type="monotone"
                 dataKey="omega"
                 name="ω"
-                stroke="#4f9cf9"
+                stroke={OMEGA}
                 dot={false}
                 strokeWidth={2}
                 isAnimationActive={false}
@@ -126,7 +129,7 @@ export function TrajectoryChart({ series }: { series: PlotSeries }) {
                 type="monotone"
                 dataKey="u"
                 name="u"
-                stroke="#3fb950"
+                stroke={CTRL}
                 dot={false}
                 strokeWidth={1.5}
                 isAnimationActive={false}

@@ -9,25 +9,48 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // Dark "engineering console" palette — the copilot IS the app.
+        // Midnight Void → Deep Slate engineering console
+        // Use <alpha-value> so utilities like text-cloud/90 and bg-ink-850/80 work.
         ink: {
-          950: "#0a0e14",
-          900: "#0f141c",
-          850: "#141b26",
-          800: "#1a2332",
-          700: "#243044",
-          600: "#33425c",
+          950: "rgb(11 17 32 / <alpha-value>)",
+          900: "rgb(17 24 39 / <alpha-value>)",
+          850: "rgb(30 41 59 / <alpha-value>)",
+          800: "rgb(36 52 71 / <alpha-value>)",
+          700: "rgb(51 65 85 / <alpha-value>)",
+          600: "rgb(71 85 105 / <alpha-value>)",
         },
+        cloud: "rgb(248 250 252 / <alpha-value>)",
         accent: {
-          DEFAULT: "#4f9cf9",
-          soft: "#2b6cb0",
+          DEFAULT: "rgb(16 185 129 / <alpha-value>)",
+          soft: "rgb(5 150 105 / <alpha-value>)",
         },
-        ok: "#3fb950",
-        warn: "#d29922",
-        danger: "#f85149",
+        violet: {
+          DEFAULT: "rgb(139 92 246 / <alpha-value>)",
+          soft: "rgb(124 58 237 / <alpha-value>)",
+        },
+        ok: "rgb(16 185 129 / <alpha-value>)",
+        warn: "rgb(245 158 11 / <alpha-value>)",
+        danger: "rgb(244 63 94 / <alpha-value>)",
       },
       fontFamily: {
-        mono: ["ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"],
+        sans: [
+          "var(--font-sans)",
+          "ui-sans-serif",
+          "system-ui",
+          "sans-serif",
+        ],
+        mono: [
+          "var(--font-mono)",
+          "ui-monospace",
+          "SFMono-Regular",
+          "Menlo",
+          "Consolas",
+          "monospace",
+        ],
+      },
+      boxShadow: {
+        panel: "0 1px 0 0 rgb(255 255 255 / 0.04) inset",
+        glow: "0 0 0 1px rgb(16 185 129 / 0.25), 0 8px 24px -8px rgb(16 185 129 / 0.35)",
       },
     },
   },

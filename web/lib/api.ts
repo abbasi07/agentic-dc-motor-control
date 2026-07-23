@@ -95,8 +95,16 @@ export function createJob(
   });
 }
 
+export function listJobs(): Promise<{ jobs: JobPublic[] }> {
+  return request("/jobs");
+}
+
 export function getJob(jobId: string): Promise<JobPublic> {
   return request(`/jobs/${jobId}`);
+}
+
+export function deleteJob(jobId: string): Promise<{ deleted: boolean; job_id: string }> {
+  return request(`/jobs/${jobId}`, { method: "DELETE" });
 }
 
 export function getWorkspace(jobId: string): Promise<Workspace> {

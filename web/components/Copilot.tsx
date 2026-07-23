@@ -22,6 +22,11 @@ import { ChatPane } from "./ChatPane";
 import { TopBar } from "./TopBar";
 
 const JOB_STORAGE_KEY = "copilot_job_id";
+const CHAT_WIDTH_KEY = "copilot_chat_width";
+const CHAT_OPEN_KEY = "copilot_chat_open";
+const DEFAULT_CHAT_WIDTH = 420;
+const MIN_CHAT_WIDTH = 300;
+const MAX_CHAT_WIDTH = 720;
 
 let activitySeq = 0;
 function nextActivityId(): string {
@@ -34,6 +39,14 @@ function toolLabel(name: unknown): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+function clampChatWidth(px: number): number {
+  if (typeof window === "undefined") {
+    return Math.min(MAX_CHAT_WIDTH, Math.max(MIN_CHAT_WIDTH, px));
+  }
+  const room = Math.max(MIN_CHAT_WIDTH, window.innerWidth - 360);
+  return Math.min(MAX_CHAT_WIDTH, Math.min(room, Math.max(MIN_CHAT_WIDTH, px)));
+}
+
 export function Copilot() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
@@ -42,6 +55,9 @@ export function Copilot() {
   const [sending, setSending] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
   const [booting, setBooting] = useState(true);
+  const [chatWidth, setChatWidth] = useState(DEFAULT_CHAT_WIDTH);
+  const [chatOpen, setChatOpen] = useState(true);
+  const [resizing, setResizing] = useState(false);
 
   const pushActivity = useCallback((item: Omit<ActivityItem, "id">) => {
     setActivity((prev) => [...prev.slice(-199), { ...item, id: nextActivityId() }]);
@@ -54,6 +70,65 @@ export function Copilot() {
       /* transient — SSE will also push a snapshot */
     }
   }, []);
+
+  const setChatOpenPersisted = useCallback((open: boolean) => {
+    setChatOpen(open);
+    try {
+      window.localStorage.setItem(CHAT_OPEN_KEY, open ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const toggleChat = useCallback(() => {
+    setChatOpenPersisted(!chatOpen);
+  }, [chatOpen, setChatOpenPersisted]);
+
+  // Restore persisted chat pane width + open/closed.
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(CHAT_WIDTH_KEY);
+      if (raw) {
+        const n = Number(raw);
+        if (Number.isFinite(n)) setChatWidth(clampChatWidth(n));
+      }
+      const openRaw = window.localStorage.getItem(CHAT_OPEN_KEY);
+      if (openRaw === "0") setChatOpen(false);
+      if (openRaw === "1") setChatOpen(true);
+    } catch {
+      /* ignore storage errors */
+    }
+  }, []);
+
+  // Drag-to-resize the chat pane (desktop).
+  useEffect(() => {
+    if (!resizing) return;
+    const onMove = (e: MouseEvent) => {
+      const next = clampChatWidth(window.innerWidth - e.clientX);
+      setChatWidth(next);
+    };
+    const onUp = () => {
+      setResizing(false);
+      setChatWidth((w) => {
+        try {
+          window.localStorage.setItem(CHAT_WIDTH_KEY, String(w));
+        } catch {
+          /* ignore */
+        }
+        return w;
+      });
+    };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [resizing]);
 
   // ----------------------------------------------------------------- //
   // Session bootstrap: resume the stored job or create a fresh one.
@@ -83,6 +158,26 @@ export function Copilot() {
       setBooting(false);
     }
   }, [refreshWorkspace]);
+
+  const openSession = useCallback(
+    async (id: string) => {
+      if (!id || id === jobId) return;
+      setBooting(true);
+      setBanner(null);
+      setActivity([]);
+      try {
+        window.localStorage.setItem(JOB_STORAGE_KEY, id);
+        await loadJob(id);
+        setJobId(id);
+        setChatOpenPersisted(true);
+      } catch (e) {
+        setBanner(errMsg(e));
+      } finally {
+        setBooting(false);
+      }
+    },
+    [jobId, loadJob, setChatOpenPersisted],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -230,25 +325,70 @@ export function Copilot() {
         workspace={workspace}
         connection={connection}
         jobId={jobId}
+        chatOpen={chatOpen}
+        onToggleChat={toggleChat}
         onNewSession={startNewSession}
       />
       {banner && (
-        <div className="border-b border-warn/30 bg-warn/10 px-4 py-2 text-sm text-warn">
+        <div className="border-b border-warn/25 bg-warn/10 px-5 py-2.5 text-sm text-warn">
           {banner}
         </div>
       )}
-      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[1fr_minmax(380px,460px)]">
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         {/* LEFT: dynamic artifact tabs (reflect-only). */}
-        <ArtifactPanel workspace={workspace} booting={booting} />
-        {/* RIGHT: chat + agent activity. */}
-        <ChatPane
-          messages={messages}
-          activity={activity}
-          sending={sending}
-          connection={connection}
-          disabled={!jobId || booting}
-          onSend={sendMessage}
-        />
+        <div className="min-h-0 min-w-0 flex-1">
+          <ArtifactPanel workspace={workspace} booting={booting} />
+        </div>
+        {chatOpen ? (
+          <>
+            {/* Drag handle — desktop only. */}
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize chat pane"
+              title="Drag to resize"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                setResizing(true);
+              }}
+              className={[
+                "hidden shrink-0 cursor-col-resize lg:block",
+                "w-1.5 bg-ink-700/50 transition-colors",
+                "hover:bg-accent/50",
+                resizing ? "bg-accent/70" : "",
+              ].join(" ")}
+            />
+            {/* RIGHT: chat + agent activity (width adjustable on lg+). */}
+            <div
+              className="flex min-h-[42vh] w-full min-w-0 flex-col lg:min-h-0 lg:w-[var(--chat-pane-width)] lg:shrink-0"
+              style={{ ["--chat-pane-width" as string]: `${chatWidth}px` }}
+            >
+              <ChatPane
+                messages={messages}
+                activity={activity}
+                sending={sending}
+                connection={connection}
+                disabled={!jobId || booting}
+                jobId={jobId}
+                onSend={sendMessage}
+                onHide={() => setChatOpenPersisted(false)}
+                onOpenSession={openSession}
+                onNewSession={startNewSession}
+              />
+            </div>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setChatOpenPersisted(true)}
+            title="Show chat pane"
+            aria-label="Show chat pane"
+            className="hidden shrink-0 items-center justify-center border-l border-ink-700/80 bg-ink-900/60 px-1.5 text-[10px] font-medium uppercase tracking-wider text-slate-400 transition-colors hover:bg-ink-850 hover:text-cloud lg:flex"
+            style={{ writingMode: "vertical-rl" }}
+          >
+            Chat
+          </button>
+        )}
       </div>
     </div>
   );

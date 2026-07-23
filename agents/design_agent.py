@@ -318,10 +318,14 @@ class DesignAgentSession:
             payload = {k: float(v) for k, v in numeric.items()}
             payload["V_max"] = float(V_max) if V_max is not None else 12.0
             payload["name"] = name or "custom_dc_motor"
-            set_motor_from_params(self.job, payload)
+            # append_chat=False: this agent will write one confirmation reply itself.
+            set_motor_from_params(self.job, payload, append_chat=False)
         elif description:
             # NL -> validated MotorModel (OpenAI-only, re-validated by physics).
-            set_motor_from_text(self.job, description)
+            # User turn is already on job.chat from chat(); don't echo description again.
+            set_motor_from_text(
+                self.job, description, append_user=False, append_chat=False
+            )
         else:
             return {"error": "Provide either a text description or all of J, b, K, R, L."}
 
@@ -899,13 +903,16 @@ def _system_prompt() -> str:
         "- For ANY question about results (\"what was the settling time?\") you MUST call "
         "query_results and quote only the numbers it returns.\n\n"
         "WORKFLOW (walk the engineer through it, one stage at a time):\n"
-        "1. MOTOR: When the engineer describes a motor, call define_plant. Read back the "
-        "derived characteristics and any warnings. If the numbers look non-physical or "
-        "unusual, push back and help fix them. When the engineer is happy, call "
-        "confirm(stage='motor') to lock it in.\n"
-        "2. SPEC: Ask for performance goals; call set_spec, then check_feasibility. If the "
-        "spec is infeasible or tight, explain plainly and negotiate until it is achievable. "
-        "When the engineer agrees, call confirm(stage='spec').\n"
+        "1. MOTOR: When the engineer describes a motor, call define_plant. Then write ONE "
+        "reply that (a) lists the proposed params (J, b, K, R, L, V_max), (b) cites the "
+        "tool's derived characteristics (τ_mech, τ_elec, ω_max), and (c) notes any "
+        "warnings. Ask them to approve or say what to change. Do NOT ask for performance "
+        "goals yet. If numbers look non-physical, push back. When they clearly approve, "
+        "call confirm(stage='motor') to lock it in.\n"
+        "2. SPEC: Only after the motor is confirmed, ask for performance goals; call "
+        "set_spec, then check_feasibility. If the spec is infeasible or tight, explain "
+        "plainly and negotiate until it is achievable. When the engineer agrees, call "
+        "confirm(stage='spec').\n"
         "3. CONTROLLER: Only after the spec is confirmed, ask which controller family they "
         f"want ({list(CONTROLLER_TYPES)}) or offer 'auto'. Ask any needed clarifying "
         "questions, then call design_controller.\n"

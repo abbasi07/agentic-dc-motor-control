@@ -30,6 +30,24 @@ def test_create_and_get_job():
     assert got["status"] == "draft"
 
 
+def test_delete_job(monkeypatch):
+    import dataclasses
+
+    from saas import config
+
+    base = config.get_settings()
+    monkeypatch.setattr(
+        config, "get_settings", lambda: dataclasses.replace(base, auth_enabled=False)
+    )
+    jobs_mod._STORE = JobStore()
+    client = TestClient(app)
+    job_id = client.post("/jobs", json={"plant_id": "dc_motor_ctms"}).json()["job_id"]
+    assert client.delete(f"/jobs/{job_id}").json() == {"deleted": True, "job_id": job_id}
+    assert client.get(f"/jobs/{job_id}").status_code == 404
+    assert client.delete(f"/jobs/{job_id}").status_code == 404
+    assert job_id not in [j["job_id"] for j in client.get("/jobs").json()["jobs"]]
+
+
 def test_workspace_route_returns_phase_and_tabs():
     jobs_mod._STORE = JobStore()
     client = TestClient(app)

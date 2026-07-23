@@ -136,6 +136,23 @@ def test_repository_persist_and_rehydrate_in_fresh_process(db):
     assert got.tenant_id == "dev"
 
 
+def test_repository_delete_removes_job(db):
+    writer = JobRepository(session_factory=db)
+    job = writer.create(plant_id="dc_motor_ctms", mode="heuristic")
+    job.chat.append({"role": "user", "content": "bye"})
+    writer.save(job)
+    job_id = job.job_id
+
+    writer.delete(job_id)
+    reader = JobRepository(session_factory=db)
+    try:
+        reader.get(job_id)
+        assert False, "expected KeyError"
+    except KeyError:
+        pass
+    assert job_id not in {j.job_id for j in reader.list_jobs()}
+
+
 def test_rehydrated_job_rebuilds_live_motor_params(db):
     from saas.service import effective_motor_params
 

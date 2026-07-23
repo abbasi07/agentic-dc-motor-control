@@ -164,6 +164,23 @@ class JobRepository:
                     jobs.append(job)
                 return jobs
 
+    def delete(self, job_id: str, tenant_id: str | None = None) -> None:
+        """Permanently remove a job and its cascaded projections / agent session."""
+        with self._lock:
+            with self._sf() as session:
+                row = session.get(DesignJobRow, job_id)
+                if row is None:
+                    raise KeyError(f"Unknown job_id={job_id}")
+                if (
+                    tenant_id is not None
+                    and row.tenant_id is not None
+                    and row.tenant_id != tenant_id
+                ):
+                    raise KeyError(f"Unknown job_id={job_id}")
+                session.delete(row)
+                session.commit()
+            self._cache.pop(job_id, None)
+
     # ------------------------------------------------------------------ #
     # Normalized projections (write-through; design_jobs.data is source of truth)
     # ------------------------------------------------------------------ #

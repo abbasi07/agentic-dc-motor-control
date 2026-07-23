@@ -58,9 +58,9 @@ export function ArtifactPanel({
   }, [available]);
 
   return (
-    <div className="flex min-h-0 flex-col bg-ink-950">
+    <div className="flex h-full min-h-0 flex-col bg-ink-950/40">
       {/* Tab strip */}
-      <div className="flex items-center gap-1 overflow-x-auto border-b border-ink-700 bg-ink-900 px-3 py-2">
+      <div className="flex items-center gap-1 overflow-x-auto border-b border-ink-700/80 bg-ink-900/60 px-3 py-2.5">
         {TABS.map((t) => {
           const present = available.some((a) => a.id === t.id);
           if (!present) return null;
@@ -69,10 +69,10 @@ export function ArtifactPanel({
               key={t.id}
               onClick={() => setActive(t.id)}
               className={[
-                "whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+                "whitespace-nowrap rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
                 active === t.id
-                  ? "bg-ink-800 text-slate-100"
-                  : "text-slate-400 hover:text-slate-200",
+                  ? "bg-ink-850 text-cloud shadow-panel"
+                  : "text-slate-400 hover:text-cloud/80",
               ].join(" ")}
             >
               {t.label}

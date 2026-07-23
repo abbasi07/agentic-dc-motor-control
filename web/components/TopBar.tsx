@@ -4,19 +4,7 @@ import { useEffect, useState } from "react";
 
 import { getApiKey, setApiKey } from "@/lib/api";
 import type { ConnectionState } from "@/lib/sse";
-import { PHASE_ORDER, type Phase, type Workspace } from "@/lib/types";
-import { titleCase } from "@/lib/format";
-
-const PHASE_SHORT: Record<Phase, string> = {
-  greeting: "Motor",
-  motor_negotiation: "Motor",
-  motor_agreed: "Motor",
-  spec_negotiation: "Requirements",
-  controller_selection: "Controller",
-  designing: "Design",
-  results_review: "Results",
-  exported: "Export",
-};
+import type { Phase, Workspace } from "@/lib/types";
 
 // Collapse the 8 internal phases into 5 visible stages for the stepper.
 const STAGES: { label: string; phases: Phase[] }[] = [
@@ -36,41 +24,50 @@ export function TopBar({
   workspace,
   connection,
   jobId,
+  chatOpen,
+  onToggleChat,
   onNewSession,
 }: {
   workspace: Workspace | null;
   connection: ConnectionState;
   jobId: string | null;
+  chatOpen: boolean;
+  onToggleChat: () => void;
   onNewSession: () => void;
 }) {
   const phase = (workspace?.phase || "greeting") as Phase;
   const current = stageIndex(phase);
 
   return (
-    <header className="border-b border-ink-700 bg-ink-900">
-      <div className="flex items-center justify-between gap-4 px-4 py-2.5">
-        <div className="flex items-center gap-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-md bg-accent/20 text-accent">
-            <span className="text-lg font-bold">⌁</span>
-          </div>
-          <div>
-            <h1 className="text-sm font-semibold text-slate-100">
-              Control Design Copilot
-            </h1>
-            <p className="text-[11px] text-slate-500">
-              Chat-first DC-motor controller design · simulation only
-            </p>
-          </div>
+    <header className="border-b border-ink-700/80 bg-ink-900/80 backdrop-blur-md">
+      <div className="flex items-center justify-between gap-4 px-5 py-3">
+        <div className="min-w-0">
+          <h1 className="text-[15px] font-semibold tracking-tight text-cloud">
+            Control Design
+            <span className="ml-1.5 font-normal text-violet">Copilot</span>
+          </h1>
+          <p className="truncate text-[11px] text-slate-500">
+            DC-motor speed control · simulation only
+          </p>
         </div>
 
         <PhaseStepper current={current} />
 
-        <div className="flex items-center gap-3">
+        <div className="flex shrink-0 items-center gap-2.5">
           <ConnectionDot state={connection} />
           <ApiKeyButton />
           <button
+            type="button"
+            onClick={onToggleChat}
+            aria-pressed={chatOpen}
+            title={chatOpen ? "Hide chat pane" : "Show chat pane"}
+            className="rounded-lg border border-ink-600 bg-ink-850 px-3 py-1.5 text-xs font-medium text-cloud/90 transition-colors hover:border-ink-600 hover:bg-ink-800"
+          >
+            {chatOpen ? "Hide chat" : "Show chat"}
+          </button>
+          <button
             onClick={onNewSession}
-            className="rounded-md border border-ink-600 bg-ink-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-ink-700"
+            className="rounded-lg border border-ink-600 bg-ink-850 px-3 py-1.5 text-xs font-medium text-cloud/90 transition-colors hover:border-ink-600 hover:bg-ink-800"
           >
             New session
           </button>
@@ -82,38 +79,44 @@ export function TopBar({
 
 function PhaseStepper({ current }: { current: number }) {
   return (
-    <ol className="hidden items-center gap-1 md:flex">
+    <ol className="hidden items-center gap-0 md:flex">
       {STAGES.map((stage, i) => {
         const done = i < current;
         const active = i === current;
         return (
-          <li key={stage.label} className="flex items-center gap-1">
+          <li key={stage.label} className="flex items-center">
             <div
               className={[
-                "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+                "flex items-center gap-2 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors",
                 active
-                  ? "bg-accent/20 text-accent"
+                  ? "bg-accent/10 text-accent"
                   : done
-                    ? "text-ok"
+                    ? "text-accent/80"
                     : "text-slate-500",
               ].join(" ")}
             >
               <span
                 className={[
-                  "flex h-4 w-4 items-center justify-center rounded-full text-[10px]",
+                  "flex h-5 w-5 items-center justify-center rounded-md text-[10px] font-semibold tabular-nums",
                   active
                     ? "bg-accent text-ink-950"
                     : done
-                      ? "bg-ok text-ink-950"
-                      : "bg-ink-700 text-slate-400",
+                      ? "bg-accent/20 text-accent"
+                      : "bg-ink-800 text-slate-500",
                 ].join(" ")}
               >
-                {done ? "✓" : i + 1}
+                {i + 1}
               </span>
               {stage.label}
             </div>
             {i < STAGES.length - 1 && (
-              <span className="text-ink-600">›</span>
+              <span
+                className={[
+                  "mx-0.5 h-px w-4",
+                  i < current ? "bg-accent/40" : "bg-ink-700",
+                ].join(" ")}
+                aria-hidden
+              />
             )}
           </li>
         );
@@ -138,7 +141,7 @@ function ConnectionDot({ state }: { state: ConnectionState }) {
       title={`Event stream: ${s.label}`}
     >
       <span
-        className={`h-2 w-2 rounded-full ${s.color} ${s.pulse ? "animate-pulse-dot" : ""}`}
+        className={`h-1.5 w-1.5 rounded-full ${s.color} ${s.pulse ? "animate-pulse-dot" : ""}`}
       />
       {s.label}
     </div>
@@ -157,26 +160,26 @@ function ApiKeyButton() {
     <div className="relative">
       <button
         onClick={() => setOpen((o) => !o)}
-        className="rounded-md border border-ink-600 bg-ink-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-ink-700"
+        className="rounded-lg border border-ink-600 bg-ink-850 px-3 py-1.5 text-xs font-medium text-cloud/90 transition-colors hover:bg-ink-800"
         title="Set the API key (Authorization: Bearer)"
       >
         API key
       </button>
       {open && (
-        <div className="absolute right-0 z-20 mt-2 w-72 rounded-lg border border-ink-700 bg-ink-850 p-3 shadow-xl">
-          <label className="mb-1 block text-xs text-slate-400">
+        <div className="absolute right-0 z-20 mt-2 w-72 rounded-xl border border-ink-700 bg-ink-850 p-3 shadow-xl shadow-black/40">
+          <label className="mb-1.5 block text-xs text-slate-400">
             Authorization: Bearer
           </label>
           <input
             value={value}
             onChange={(e) => setValue(e.target.value)}
-            className="w-full rounded-md border border-ink-600 bg-ink-900 px-2 py-1.5 font-mono text-xs text-slate-100 outline-none focus:border-accent"
+            className="w-full rounded-lg border border-ink-600 bg-ink-950 px-2.5 py-1.5 font-mono text-xs text-cloud outline-none transition-colors focus:border-accent focus:shadow-glow"
             placeholder="dev-local-key"
           />
-          <div className="mt-2 flex justify-end gap-2">
+          <div className="mt-2.5 flex justify-end gap-2">
             <button
               onClick={() => setOpen(false)}
-              className="rounded-md px-2 py-1 text-xs text-slate-400 hover:text-slate-200"
+              className="rounded-lg px-2.5 py-1 text-xs text-slate-400 transition-colors hover:text-cloud"
             >
               Cancel
             </button>
@@ -185,7 +188,7 @@ function ApiKeyButton() {
                 setApiKey(value);
                 setOpen(false);
               }}
-              className="rounded-md bg-accent px-2.5 py-1 text-xs font-medium text-ink-950 hover:opacity-90"
+              className="rounded-lg bg-accent px-2.5 py-1 text-xs font-semibold text-ink-950 transition-opacity hover:opacity-90"
             >
               Save
             </button>

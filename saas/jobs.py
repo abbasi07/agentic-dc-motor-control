@@ -202,6 +202,20 @@ class JobStore:
             jobs = [j for j in jobs if j.tenant_id == tenant_id]
         return jobs
 
+    def delete(self, job_id: str, tenant_id: str | None = None) -> None:
+        """Remove a job. Raises KeyError if missing or tenant-scoped out."""
+        with self._lock:
+            if job_id not in self._jobs:
+                raise KeyError(f"Unknown job_id={job_id}")
+            job = self._jobs[job_id]
+            if (
+                tenant_id is not None
+                and job.tenant_id is not None
+                and job.tenant_id != tenant_id
+            ):
+                raise KeyError(f"Unknown job_id={job_id}")
+            del self._jobs[job_id]
+
 
 _STORE: Any = None
 

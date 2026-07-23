@@ -3,6 +3,7 @@
 import { useState } from "react";
 
 import { downloadExport } from "@/lib/api";
+import { formatCopyBlock, formatCopyLines } from "@/lib/clipboard";
 import { fmtNum } from "@/lib/format";
 import type { CertificationArtifact, ExportArtifact } from "@/lib/types";
 
@@ -31,6 +32,29 @@ export function ExportTab({
 
   const allowed = certification?.allowed === true;
 
+  const certCopy = certification
+    ? formatCopyBlock("Certification gate", [
+        { label: "Decision", value: allowed ? "ALLOW" : "BLOCK" },
+        { label: "Reason", value: certification.reason },
+        ...(certification.controller_name
+          ? [{ label: "Controller", value: certification.controller_name }]
+          : []),
+        ...(certification.kind ? [{ label: "Family", value: certification.kind }] : []),
+        ...(certification.timestamp_utc
+          ? [{ label: "Certified at (UTC)", value: certification.timestamp_utc }]
+          : []),
+        ...Object.entries(certification.params || {}).map(([k, v]) => ({
+          label: k,
+          value: fmtNum(v),
+        })),
+      ])
+    : "";
+
+  const exportCopy = formatCopyLines("Export package", [
+    exportArtifact?.status ? `Status: ${exportArtifact.status}` : "",
+    exportArtifact?.path ? `Path: ${exportArtifact.path}` : "No package written yet.",
+  ]);
+
   const handleDownload = async () => {
     if (!jobId) return;
     setDownloading(true);
@@ -56,6 +80,7 @@ export function ExportTab({
       {certification && (
         <Card
           title="Certification gate"
+          copyText={certCopy}
           right={
             <Badge tone={allowed ? "ok" : "danger"}>
               {allowed ? "ALLOW" : "BLOCK"}
@@ -87,7 +112,7 @@ export function ExportTab({
         </Card>
       )}
 
-      <Card title="Export package">
+      <Card title="Export package" copyText={exportCopy}>
         <p className="mb-3 text-sm text-slate-400">
           The certification package bundles the controller parameters, the full scorecard,
           and a grounded rationale. Simulation certification only — not hardware.
@@ -98,13 +123,13 @@ export function ExportTab({
               label="Status"
               value={<Badge tone="ok">{exportArtifact.status || "exported"}</Badge>}
             />
-            <div className="break-all rounded-md border border-ink-700 bg-ink-900 px-3 py-2 font-mono text-[11px] text-slate-400">
+            <div className="break-all rounded-lg border border-ink-700/80 bg-ink-900 px-3 py-2 font-mono text-[11px] text-slate-400">
               {exportArtifact.path}
             </div>
             <button
               onClick={handleDownload}
               disabled={downloading || !jobId}
-              className="w-full rounded-md bg-accent px-3 py-2 text-sm font-semibold text-ink-950 hover:opacity-90 disabled:opacity-40"
+              className="w-full rounded-lg bg-accent px-3 py-2.5 text-sm font-semibold text-ink-950 transition-opacity hover:opacity-90 disabled:opacity-40"
             >
               {downloading ? "Preparing…" : "Download package (.zip)"}
             </button>

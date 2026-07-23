@@ -1,3 +1,4 @@
+import { formatCopyBlock, formatCopyLines } from "@/lib/clipboard";
 import { fmtNum, paramLabel, titleCase } from "@/lib/format";
 import type { MotorArtifact } from "@/lib/types";
 
@@ -20,11 +21,33 @@ export function MotorTab({ motor }: { motor?: MotorArtifact }) {
   const params = motor.params || {};
   const units = motor.param_units || {};
   const chars = motor.characteristics || {};
+  const motorTitle = motor.name || "DC motor";
+
+  const paramsCopy = formatCopyBlock(motorTitle, [
+    ...(motor.source ? [{ label: "source", value: motor.source }] : []),
+    ...(motor.V_max != null ? [{ label: "V_max (V)", value: fmtNum(motor.V_max) }] : []),
+    ...(motor.V_min != null ? [{ label: "V_min (V)", value: fmtNum(motor.V_min) }] : []),
+    ...Object.entries(params).map(([k, v]) => ({
+      label: units[k] ? `${paramLabel(k)} (${units[k]})` : paramLabel(k),
+      value: fmtNum(v),
+    })),
+  ]);
+
+  const charsCopy = formatCopyBlock(
+    "Derived characteristics",
+    Object.entries(chars).map(([k, v]) => ({
+      label: CHAR_LABELS[k] || titleCase(k),
+      value: typeof v === "number" ? fmtNum(v) : String(v),
+    })),
+  );
+
+  const warningsCopy = formatCopyLines("Notes on the numbers", motor.warnings || []);
 
   return (
     <div className="space-y-4">
       <Card
-        title={motor.name || "DC motor"}
+        title={motorTitle}
+        copyText={paramsCopy}
         right={
           <Badge tone={motor.confirmed ? "ok" : "warn"}>
             {motor.confirmed ? "Confirmed" : "Proposed"}
@@ -60,7 +83,7 @@ export function MotorTab({ motor }: { motor?: MotorArtifact }) {
       </Card>
 
       {Object.keys(chars).length > 0 && (
-        <Card title="Derived characteristics">
+        <Card title="Derived characteristics" copyText={charsCopy}>
           <div className="divide-y divide-ink-700">
             {Object.entries(chars).map(([k, v]) => (
               <KeyValue
@@ -75,7 +98,7 @@ export function MotorTab({ motor }: { motor?: MotorArtifact }) {
       )}
 
       {motor.warnings && motor.warnings.length > 0 && (
-        <Card title="Notes on the numbers">
+        <Card title="Notes on the numbers" copyText={warningsCopy}>
           <ul className="list-disc space-y-1 pl-5 text-sm text-warn">
             {motor.warnings.map((w, i) => (
               <li key={i}>{w}</li>

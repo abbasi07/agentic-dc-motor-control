@@ -219,6 +219,16 @@ def get_job(job_id: str, tenant: str = Depends(require_tenant)) -> dict[str, Any
     return job.to_public_dict()
 
 
+@app.delete("/jobs/{job_id}")
+def delete_job(job_id: str, tenant: str = Depends(require_tenant)) -> dict[str, Any]:
+    """Permanently delete a design session (chat + artifacts)."""
+    try:
+        get_job_store().delete(job_id, tenant_id=tenant)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"deleted": True, "job_id": job_id}
+
+
 @app.post("/jobs/{job_id}/motor")
 def set_motor_text(
     job_id: str, body: MotorTextRequest, tenant: str = Depends(require_tenant)
