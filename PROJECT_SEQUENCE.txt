@@ -4,8 +4,8 @@ PROJECT CONTINUITY BRIEF — Agentic Orchestration of DC Motor Control
 Purpose: Hand this file to a new chat if the current conversation runs out of
 context/tokens. It captures decisions, current state, and the planned sequence.
 
-Last updated: 2026-07-22 (workstream C: pluggable controller registry + real
-LQR/LQG, constrained MPC, MRAC, Fuzzy PID; grounded critic; orchestrator wiring)
+Last updated: 2026-07-23 (Streamlit chat-first UI wired to design agent + custom
+motor + controller family pick; workstream E SaaS hardening is NEXT)
 Repo: https://github.com/abbasi07/agentic-dc-motor-control
 Local path: E:\Agentic AI Course\Projects\1_Agentic_Orchestration_of_DC_Motor_Control
 
@@ -178,6 +178,7 @@ Transfer function (speed from voltage):
 [x] Generalized arbitrary-motor plant + physics feasibility (workstreams A + B)
 [x] Chat-first tool-calling Design Agent + grounded query_results (workstream D)
 [x] Controller registry + real controllers: LQR/LQG, proper MPC, MRAC, Fuzzy (workstream C)
+[x] Streamlit chat-first UI: custom motor params, always-on chat, family pick, results/export
 [ ] SaaS hardening: persistence, auth/multi-tenant, async runs, budgets (workstream E) — NEXT
 [ ] Agent eval harness extensions (workstream F) — throughout
 

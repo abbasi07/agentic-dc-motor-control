@@ -41,8 +41,9 @@ E. SaaS hardening: persistence (SQLite/Postgres), auth/multi-tenant, async desig
 F. Agent eval harness (extend experiments/ablation.py): reaches certified design?
      how many tool calls / tokens? query grounding tests.                      — TODO
 
-Order: D -> C -> E, with F throughout. Backend-first (keep Streamlit a thin
-throwaway harness; do NOT polish it). D + C are now DONE; E is next.
+Order: D -> C -> E, with F throughout. Backend-first. D + C DONE; Streamlit now
+exposes the chat-first agent + custom motor + family pick (still a thin harness —
+do NOT polish into a final UI; React later). E is next.
 
 ## Done this chat (A + B — do not redo unless broken)
 - dc_motor/motor_model.py  — MotorModel + build_motor_model() validation (positive/finite/
@@ -111,10 +112,13 @@ throwaway harness; do NOT polish it). D + C are now DONE; E is next.
     Full suite: 93 passed (was 48). Lints clean. e2e heuristic loop verified to escalate
     PID -> scipy -> call_lqr -> call_robust -> call_lqg -> call_mrac -> expand/relax under a hard spec.
 
-## Known gap left open (intentional)
-- Streamlit UI does NOT yet surface the chat-first agent (define motor + design in one chat);
-  capability lives in agents/design_agent.py + service + POST /jobs/{id}/agent. Hook the UI up
-  only after React replaces Streamlit (do NOT polish Streamlit).
+## Done after C (Streamlit chat-first UI — do not redo unless broken)
+- saas/ui_streamlit.py rewritten as chat-first console (still a temporary harness; React later):
+  always-visible conversation panel wired to service.agent_chat / DesignAgentSession;
+  structured Motor tab (J,b,K,R,L,V_max — presets only pre-fill); Requirements tab (no-LLM
+  structured DesignSpec + feasibility); Design tab with Auto or explicit family pick
+  (PID/Robust/LQR/LQG/MPC/MRAC/Fuzzy from controller_registry); Results & export tab.
+  Degrades gracefully without OPENAI_API_KEY (structured panel still drives the engine).
 
 ## Locked decisions (do not reverse)
 - Simulation/software only; export = certification package, not hardware.
@@ -158,5 +162,5 @@ agents/critic.py.
 - Turn feasibility into an LLM guess (it must stay deterministic physics).
 - Collapse the controller registry back into hard-coded if/else dispatch.
 - Large drive-by refactors unrelated to the chosen workstream.
-- Polish Streamlit into a "final" UI (React will replace it).
+- Polish Streamlit into a "final" UI (React will replace it) — keep it a thin harness.
 ```
