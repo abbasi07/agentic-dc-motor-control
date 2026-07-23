@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
@@ -17,10 +18,28 @@ from .jobs import get_job_store
 
 load_dotenv()
 
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """When persistence is enabled, ensure the DB schema + default tenant exist.
+
+    Off by default (host tools / tests stay in-memory); Docker Compose sets
+    ``COPILOT_PERSIST=true`` so the api + worker share Postgres.
+    """
+    from .config import get_settings
+
+    if get_settings().persistence_enabled:
+        from .repository import get_repository
+
+        get_repository()
+    yield
+
+
 app = FastAPI(
     title="Control Design Copilot",
     description="Simulation-only adaptive controller design jobs (no hardware).",
     version="0.1.0",
+    lifespan=_lifespan,
 )
 
 
@@ -85,6 +104,7 @@ def create_job(body: CreateJobRequest) -> dict[str, Any]:
     except KeyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     job.max_iterations = body.max_iterations
+    get_job_store().save(job)
     return job.to_public_dict()
 
 
@@ -155,14 +175,26 @@ def clarify(job_id: str, body: ClarifyRequest) -> dict[str, Any]:
 
 @app.post("/jobs/{job_id}/run")
 def run_design(job_id: str, body: RunRequest | None = None) -> dict[str, Any]:
+    """Start a design run.
+
+    When async runs are enabled (Compose default) the CPU-heavy design loop is enqueued
+    to the RQ worker and this returns immediately with ``status="queued"`` — poll
+    ``GET /jobs/{id}`` or ``GET /jobs/{id}/status`` for completion. Otherwise it runs
+    inline (host tools / tests).
+    """
+    from .config import get_settings
+
     body = body or RunRequest()
     try:
         job = get_job_store().get(job_id)
-        service.confirm_and_run(
-            job,
-            max_iterations=body.max_iterations,
-            maxiter_scipy=body.maxiter_scipy,
-        )
+        if get_settings().async_runs_enabled:
+            service.enqueue_design_run(job, max_iterations=body.max_iterations)
+        else:
+            service.confirm_and_run(
+                job,
+                max_iterations=body.max_iterations,
+                maxiter_scipy=body.maxiter_scipy,
+            )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -170,6 +202,16 @@ def run_design(job_id: str, body: RunRequest | None = None) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return job.to_public_dict()
+
+
+@app.get("/jobs/{job_id}/status")
+def run_status(job_id: str) -> dict[str, Any]:
+    """Lightweight status/poll path for an (async) design run."""
+    try:
+        job = get_job_store().get(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return service.run_status(job)
 
 
 @app.post("/jobs/{job_id}/feedback")
@@ -227,6 +269,20 @@ def download_export(job_id: str):
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Export file missing: {path}")
     return FileResponse(path, filename=path.name)
+
+
+@app.get("/jobs/{job_id}/workspace")
+def workspace(job_id: str) -> dict[str, Any]:
+    """Reflect-only workspace snapshot: workflow phase + artifacts that exist.
+
+    This is the contract the chat-first frontend renders: panels appear dynamically
+    as the conversation reaches each stage (motor -> spec -> results -> export).
+    """
+    try:
+        job = get_job_store().get(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return service.workspace_for_job(job)
 
 
 @app.get("/jobs/{job_id}/scorecard")

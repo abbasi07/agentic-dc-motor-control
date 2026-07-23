@@ -22,9 +22,20 @@ from .jobs import DesignJob, JobStore, default_export_dir, get_job_store
 from .present import design_finished_message, feedback_plan_message
 
 
-def create_job(*, plant_id: str = DEFAULT_PLANT_ID, mode: str = "heuristic") -> DesignJob:
+def _save(job: DesignJob) -> DesignJob:
+    """Persist mutated job state through the active store.
+
+    No-op for the in-memory :class:`saas.jobs.JobStore`; serializes to Postgres when
+    persistence is enabled so state survives restarts and reaches the worker process.
+    """
+    return get_job_store().save(job)
+
+
+def create_job(
+    *, plant_id: str = DEFAULT_PLANT_ID, mode: str = "heuristic", tenant_id: str | None = None
+) -> DesignJob:
     get_plant_spec(plant_id)  # validate
-    return get_job_store().create(plant_id=plant_id, mode=mode)
+    return get_job_store().create(plant_id=plant_id, mode=mode, tenant_id=tenant_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -34,6 +45,10 @@ def _record_motor(job: DesignJob, motor: MotorModel) -> DesignJob:
     job._motor = motor
     job.motor_dict = motor.to_dict()
     job.plant_id = "custom_dc_motor"
+    # A (re)defined motor is a fresh proposal: it must be re-confirmed, and any
+    # prior spec agreement is invalidated because feasibility depends on the motor.
+    job.motor_confirmed = False
+    job.spec_confirmed = False
     if motor.warnings:
         warn_md = "\n".join(f"- {w}" for w in motor.warnings)
         note = f"\n\nHeads-up on the numbers you gave:\n{warn_md}"
@@ -52,7 +67,7 @@ def _record_motor(job: DesignJob, motor: MotorModel) -> DesignJob:
         }
     )
     job.touch()
-    return job
+    return _save(job)
 
 
 def set_motor_from_text(job: DesignJob, text: str, *, append_user: bool = True) -> DesignJob:
@@ -110,11 +125,13 @@ def interpret_job_spec(
         job.status = "failed"
         job.error = str(exc)
         job.touch()
+        _save(job)
         raise
 
     job._spec = spec
     job.spec_dict = spec.to_dict()
     job.confirmed = False
+    job.spec_confirmed = False  # a (re)interpreted spec must be re-agreed by the user
 
     # Physics-based feasibility against the (custom or registry) motor.
     feas = _feasibility_for_job(job, spec)
@@ -165,7 +182,7 @@ def interpret_job_spec(
         job.clarifying_questions = feas_questions if has_infeasible else []
 
     job.touch()
-    return job
+    return _save(job)
 
 
 def answer_clarification(job: DesignJob, answer: str) -> DesignJob:
@@ -182,15 +199,13 @@ def confirm_and_run(
     max_iterations: int | None = None,
     maxiter_scipy: int = 8,
 ) -> DesignJob:
-    if job._spec is None and job.spec_dict is not None:
-        job._spec = design_spec_from_dict(job.spec_dict, raw_spec=job.nl_spec, source="manual")
-    if job._spec is None:
-        raise RuntimeError("No DesignSpec to confirm. Interpret a natural-language spec first.")
+    _ensure_spec_for_run(job)
 
     job.confirmed = True
     job.status = "running"
     job.error = None
     job.touch()
+    _save(job)  # persist "running" so status is visible while the worker computes
     iters = max_iterations if max_iterations is not None else job.max_iterations
 
     # A chat-defined custom motor overrides the registry plant: pass MotorParams
@@ -217,6 +232,7 @@ def confirm_and_run(
         job.status = "failed"
         job.error = str(exc)
         job.touch()
+        _save(job)
         raise
 
     job._session = session
@@ -244,7 +260,64 @@ def confirm_and_run(
         )
     job.chat.append({"role": "assistant", "content": summary})
     job.touch()
-    return job
+    return _save(job)
+
+
+def _ensure_spec_for_run(job: DesignJob) -> None:
+    """Rebuild the live DesignSpec (from persisted JSON if needed) or raise."""
+    if job._spec is None and job.spec_dict is not None:
+        job._spec = design_spec_from_dict(job.spec_dict, raw_spec=job.nl_spec, source="manual")
+    if job._spec is None:
+        raise RuntimeError("No DesignSpec to confirm. Interpret a natural-language spec first.")
+
+
+def enqueue_design_run(
+    job: DesignJob,
+    *,
+    max_iterations: int | None = None,
+    queue: Any = None,
+) -> DesignJob:
+    """Enqueue a design run to the RQ worker and return immediately (E2.3).
+
+    The job is persisted as ``queued`` so a poll reflects it right away; the worker
+    rehydrates from the DB, runs :func:`confirm_and_run` (running -> completed/failed),
+    and persists the result, which the API picks up via the ``rev`` rehydrate path.
+    """
+    _ensure_spec_for_run(job)
+    from .queue import enqueue_design_run as _enqueue
+
+    if max_iterations is not None:
+        job.max_iterations = max_iterations  # persist override so the worker uses it
+    job.confirmed = True
+    job.status = "queued"
+    job.error = None
+    job.touch()
+    _save(job)  # persist BEFORE enqueue so the worker sees committed state
+
+    rq_job = _enqueue(job.job_id, max_iterations=max_iterations, queue=queue)
+    job.queue_job_id = rq_job.id
+    job.touch()
+    return _save(job)
+
+
+def run_status(job: DesignJob) -> dict[str, Any]:
+    """Lightweight status/poll payload for an async design run."""
+    payload: dict[str, Any] = {
+        "job_id": job.job_id,
+        "status": job.status,
+        "error": job.error,
+        "queue_job_id": job.queue_job_id,
+        "updated_at": job.updated_at,
+    }
+    if job.queue_job_id:
+        try:
+            from .queue import fetch_queue_job
+
+            rq_job = fetch_queue_job(job.queue_job_id)
+            payload["queue_state"] = None if rq_job is None else rq_job.get_status()
+        except Exception:  # noqa: BLE001 - poll must never fail on queue introspection
+            payload["queue_state"] = None
+    return payload
 
 
 def apply_feedback_and_maybe_rerun(
@@ -276,7 +349,7 @@ def apply_feedback_and_maybe_rerun(
     # Actions that must NOT silently rerun the design loop.
     if action in {"accept", "unclear"}:
         job.touch()
-        return job
+        return _save(job)
 
     if action == "reinterpret_spec":
         return interpret_job_spec(job, feedback, critique=True, append_user=False)
@@ -286,32 +359,54 @@ def apply_feedback_and_maybe_rerun(
         return confirm_and_run(job)
 
     job.touch()
-    return job
+    return _save(job)
 
 
 def export_job(job: DesignJob, *, out_dir: Path | None = None) -> Path:
-    if job._session is None or job._session.best is None:
-        raise RuntimeError("No design candidate to export.")
     out = out_dir or default_export_dir()
+
+    # Fast path: the live design session is still in this process (same-process run).
+    if job._session is not None and job._session.best is not None:
+        candidate = job._session.best
+        rationale = job._session.rationale or "Exported from Design Copilot."
+        action_trace = [a.to_dict() for a in job._session.action_trace]
+    else:
+        # Cross-process / post-restart path: rebuild an export-ready candidate stub from
+        # the persisted scorecard + session_dict (no live controller needed — the export
+        # writer only reads kind/params/scorecard + the controller name).
+        from .serialization import rehydrated_candidate
+
+        candidate = rehydrated_candidate(job)
+        if candidate is None:
+            raise RuntimeError("No design candidate to export.")
+        session_dict = job.session_dict or {}
+        rationale = session_dict.get("rationale") or "Exported from Design Copilot."
+        action_trace = session_dict.get("action_trace") or []
+
     path = export_certified_package(
-        job._session.best,
-        rationale=job._session.rationale or "Exported from Design Copilot.",
+        candidate,
+        rationale=rationale,
         out_dir=out,
         nl_spec=job.nl_spec,
-        action_trace=[a.to_dict() for a in job._session.action_trace],
+        action_trace=action_trace,
     )
     job.export_path = str(path)
     job.status = "exported" if path.suffix == ".zip" else "completed"
     job.touch()
+    _save(job)
     return path
 
 
 def get_agent_session(job: DesignJob):
-    """Return (creating if needed) the chat-first Design Agent bound to this job."""
+    """Return (creating if needed) the chat-first Design Agent bound to this job.
+
+    After a rehydrate the live session is gone but ``job.agent_state`` holds the
+    persisted transcript, so the tool-calling loop resumes exactly where it left off.
+    """
     from agents.design_agent import DesignAgentSession
 
     if job._agent is None:
-        job._agent = DesignAgentSession(job=job, model=None)
+        job._agent = DesignAgentSession(job=job, model=None).restore(job.agent_state)
     return job._agent
 
 
@@ -323,8 +418,19 @@ def agent_chat(job: DesignJob, message: str) -> DesignJob:
     except RuntimeError as exc:
         job.error = str(exc)
         job.touch()
+        _save(job)
         raise
-    return job
+    # Persist the updated transcript + any artifacts the tools produced this turn.
+    job.agent_state = session.snapshot()
+    job.touch()
+    return _save(job)
+
+
+def workspace_for_job(job: DesignJob) -> dict[str, Any]:
+    """Reflect-only workspace snapshot (phase + artifacts) for the frontend."""
+    from agents.workflow import build_workspace
+
+    return build_workspace(job, session=job._agent)
 
 
 def scorecard_json_for_job(job: DesignJob) -> str | None:
@@ -344,13 +450,16 @@ __all__ = [
     "confirm_and_run",
     "create_job",
     "effective_motor_params",
+    "enqueue_design_run",
     "export_job",
     "get_agent_session",
     "get_job_store",
     "interpret_job_spec",
     "llm_unavailable_message",
     "plants_public",
+    "run_status",
     "scorecard_json_for_job",
     "set_motor_from_params",
     "set_motor_from_text",
+    "workspace_for_job",
 ]

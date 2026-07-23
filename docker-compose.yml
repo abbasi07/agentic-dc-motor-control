@@ -1,0 +1,80 @@
+# Control Design Copilot — full local stack (simulation-only SaaS).
+#
+#   docker compose up            # db + redis + api + worker
+#   docker compose up db redis   # infra only
+#
+# `web` (Next.js) is added in E3. The api and worker share one image (this repo's
+# Dockerfile); they differ only in `command`. Source is bind-mounted for hot reload;
+# the virtualenv lives at /opt/venv inside the image so the mount never hides it.
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-copilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-copilot}
+      POSTGRES_DB: ${POSTGRES_DB:-copilot}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-copilot} -d ${POSTGRES_DB:-copilot}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://copilot:copilot@db:5432/copilot}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      # E2.2: turn on the Postgres-backed job store so state survives restarts and
+      # crosses the worker boundary.
+      COPILOT_PERSIST: "true"
+      # E2.3: enqueue CPU-heavy design runs to the RQ worker so the API stays responsive.
+      COPILOT_ASYNC_RUNS: "true"
+      # Windows-friendly file watching for --reload across the bind mount.
+      WATCHFILES_FORCE_POLLING: "true"
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Apply migrations (idempotent) before serving so the schema is always current.
+    command: sh -c "uv run alembic upgrade head && uv run uvicorn saas.api:app --host 0.0.0.0 --port 8000 --reload"
+
+  worker:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://copilot:copilot@db:5432/copilot}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      COPILOT_PERSIST: "true"
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Queue name finalized in E2.3; RQ worker consumes design-run jobs.
+    command: uv run rq worker --url ${REDIS_URL:-redis://redis:6379/0} copilot
+
+volumes:
+  pgdata:

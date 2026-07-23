@@ -21,6 +21,23 @@ wheels/
 # Local simulation exports (cert packages / ablation JSON)
 exports/
 
+# Local databases (Postgres runs in Docker; SQLite is only for host/dev/tests)
+*.db
+*.sqlite
+*.sqlite3
+_alembic_tmp.db
+
+# Frontend (React/Next — E3)
+web/node_modules/
+web/.next/
+web/out/
+
+# Tooling caches / logs
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.log
+
 # OS / IDE
 .DS_Store
 Thumbs.db

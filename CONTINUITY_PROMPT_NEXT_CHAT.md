@@ -1,5 +1,26 @@
 # Continuity prompt — paste into a new chat
 
+> **Status (2026-07-23) — Phase E2.3 (Async design runs via RQ) DONE.** CPU-heavy design
+> runs are now enqueued to the RQ worker so FastAPI stays responsive. New: `saas/queue.py`
+> — `get_redis_connection`/`get_queue` (queue = `settings.design_queue`, default `copilot`),
+> module-level worker task `run_design_job(job_id, …)` (rehydrates the job from the active
+> store and calls `service.confirm_and_run` — never receives a live controller), plus
+> `enqueue_design_run` + `fetch_queue_job`. `saas/service.py`: `enqueue_design_run(job)`
+> marks the job `queued`, persists BEFORE enqueue (so the worker sees committed state / poll
+> reflects it), records `queue_job_id`; `run_status(job)` poll payload; shared
+> `_ensure_spec_for_run`. `saas/api.py`: `POST /jobs/{id}/run` enqueues when
+> `async_runs_enabled` else runs inline; new `GET /jobs/{id}/status` poll path. `DesignJob`
+> gained `queue_job_id` (+ `queued` status; in `data` JSON so **no migration**);
+> `agents/workflow.py` treats `queued` as the `designing` phase. `saas/config.py`:
+> `async_runs_enabled` (`COPILOT_ASYNC_RUNS`, default False — needs persistence; Compose api
+> sets it true). Result crosses the worker→API boundary via the E2.2 serialize/rehydrate +
+> `rev` contract. `tests/test_async_runs.py` (+9): enqueue marks queued, inline queue runs +
+> persists, worker task in a fresh store + API rehydrate, RQ `SimpleWorker` burst drain, and
+> both `/run` (async + sync) + `/status` routes — all over `fakeredis` + SQLite, OpenAI-free.
+> **144 tests pass** (was 135). NEXT: **E2.4** — SSE endpoint + Redis pub/sub events
+> (message.delta, tool.started/finished, workspace.updated, run.status, refusal, error;
+> sse-starlette fanned out over Redis pub/sub; fakeredis in tests), then E2.5 auth.
+
 ```
 Continue the project Agentic Orchestration of DC Motor Control (simulation/SaaS only — no hardware).
 

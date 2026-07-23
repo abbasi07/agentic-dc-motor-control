@@ -30,6 +30,17 @@ def test_create_and_get_job():
     assert got["status"] == "draft"
 
 
+def test_workspace_route_returns_phase_and_tabs():
+    jobs_mod._STORE = JobStore()
+    client = TestClient(app)
+    job_id = client.post("/jobs", json={"plant_id": "dc_motor_ctms"}).json()["job_id"]
+    ws = client.get(f"/jobs/{job_id}/workspace").json()
+    assert ws["job_id"] == job_id
+    assert ws["phase"] == "greeting"
+    assert ws["artifacts"] == {}
+    assert "budgets" in ws
+
+
 def test_agent_chat_route_wires_tool_agent():
     jobs_mod._STORE = JobStore()
     client = TestClient(app)

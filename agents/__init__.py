@@ -56,6 +56,17 @@ from .design_agent import (
     DesignAgentSession,
     scorecard_numbers,
 )
+from .domain_guard import (
+    classify_request,
+    has_control_context,
+    refusal_message,
+    should_refuse,
+)
+from .workflow import (
+    PHASE_ORDER,
+    build_workspace,
+    compute_phase,
+)
 
 __all__ = [
     "interpret_spec",
@@ -105,4 +116,11 @@ __all__ = [
     "TOOL_SCHEMAS",
     "DesignAgentSession",
     "scorecard_numbers",
+    "classify_request",
+    "has_control_context",
+    "refusal_message",
+    "should_refuse",
+    "PHASE_ORDER",
+    "build_workspace",
+    "compute_phase",
 ]

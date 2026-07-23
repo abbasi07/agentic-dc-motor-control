@@ -43,8 +43,10 @@ from dc_motor.specs import DesignSpec, design_spec_from_dict
 from .certify import certify_candidate
 from .controller_registry import CONTROLLER_TYPE_NAMES, design_by_type
 from .design_candidate import DesignCandidate, candidate_from_controller
+from .domain_guard import refusal_message, should_refuse
 from .orchestrator import DesignSession, grounded_rationale
 from .spec_agent import DEFAULT_MODEL, interpret_spec, llm_unavailable_message
+from .workflow import build_workspace, compute_phase
 
 load_dotenv()
 
@@ -225,6 +227,29 @@ class DesignAgentSession:
         return cls(job=job, model=model)
 
     # ------------------------------------------------------------------ #
+    # Persistence (E2.2): snapshot / restore the tool-calling transcript so the
+    # session survives a restart and can be rehydrated in the worker process.
+    # The job (artifacts) is persisted separately; here we only carry the OpenAI
+    # transcript + audit log + token tally.
+    # ------------------------------------------------------------------ #
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "messages": list(self.messages),
+            "tool_log": list(self.tool_log),
+            "total_tokens": int(self.total_tokens),
+            "model": self.model,
+        }
+
+    def restore(self, state: dict[str, Any] | None) -> "DesignAgentSession":
+        if state:
+            self.messages = list(state.get("messages", []))
+            self.tool_log = list(state.get("tool_log", []))
+            self.total_tokens = int(state.get("total_tokens", 0) or 0)
+            if state.get("model") and self.model is None:
+                self.model = state["model"]
+        return self
+
+    # ------------------------------------------------------------------ #
     # Engine targeting (custom chat-defined motor vs registry plant)
     # ------------------------------------------------------------------ #
     def _engine_targets(self):
@@ -310,6 +335,7 @@ class DesignAgentSession:
         job._spec = spec
         job.spec_dict = spec.to_dict()
         job.confirmed = False
+        job.spec_confirmed = False  # a (re)interpreted spec must be re-agreed
         feas = self.check_feasibility()
         return {
             "spec": spec.to_dict(),
@@ -317,6 +343,38 @@ class DesignAgentSession:
             "notes": spec.notes,
             "warnings": list(spec.warnings),
         }
+
+    def confirm(self, stage: str) -> dict[str, Any]:
+        """Record the engineer's explicit agreement to the motor or the spec.
+
+        This is a negotiation gate: the workflow only advances past a stage once the
+        engineer has confirmed it. Called by the LLM when the user clearly approves.
+        """
+        stage = (stage or "").lower().strip()
+        job = self.job
+        if stage in ("motor", "plant"):
+            if job.motor_dict is None and job._motor is None:
+                return {"error": "No motor to confirm yet. Define the motor first."}
+            job.motor_confirmed = True
+            job.touch()
+            return {"confirmed": "motor", "phase": self.phase()}
+        if stage in ("spec", "specs", "requirements", "requirement"):
+            if job.spec_dict is None and job._spec is None:
+                return {"error": "No requirements to confirm yet. Set the spec first."}
+            job.spec_confirmed = True
+            job.touch()
+            return {"confirmed": "spec", "phase": self.phase()}
+        return {"error": "Unknown stage. Use 'motor' or 'spec'."}
+
+    # ------------------------------------------------------------------ #
+    # Workflow projection (reflect-only)
+    # ------------------------------------------------------------------ #
+    def phase(self) -> str:
+        return compute_phase(self.job)
+
+    def workspace(self) -> dict[str, Any]:
+        """Reflect-only workspace snapshot for the frontend (see agents/workflow.py)."""
+        return build_workspace(self.job, session=self)
 
     def check_feasibility(self) -> dict[str, Any]:
         """Physics-based feasibility of the current spec on the current motor."""
@@ -628,7 +686,18 @@ class DesignAgentSession:
         OpenAI-only (no silent heuristic fallback): if the key is missing a clear
         message is printed and RuntimeError raised — consistent with the rest of the
         project. The *tools* remain callable deterministically for tests / fallback.
+
+        Domain guard: an obviously off-topic turn is refused deterministically (no
+        model call), keeping the copilot locked to DC-motor controller design.
         """
+        in_progress = self.job.motor_dict is not None or self.job.spec_dict is not None
+        if should_refuse(user_message, in_progress=in_progress):
+            reply = refusal_message()
+            self.job.chat.append({"role": "user", "content": user_message})
+            self.job.chat.append({"role": "assistant", "content": reply})
+            self.job.touch()
+            return reply
+
         key = os.getenv("OPENAI_API_KEY")
         if not key or key.startswith("sk-your-key"):
             msg = llm_unavailable_message(detail="OPENAI_API_KEY missing for design agent chat.")
@@ -732,6 +801,8 @@ class DesignAgentSession:
             return self.set_spec(args["text"])
         if name == "check_feasibility":
             return self.check_feasibility()
+        if name == "confirm":
+            return self.confirm(args.get("stage", ""))
         if name == "design_controller":
             return self.design_controller(
                 controller_type=args.get("controller_type", "auto"),
@@ -766,19 +837,33 @@ def _system_prompt() -> str:
     return (
         "You are the Control Design Copilot for a DC motor SPEED controller "
         "(simulation only — never claim hardware readiness).\n\n"
+        "SCOPE LOCK: You ONLY help design, test, and certify controllers for DC motors. "
+        "You are NOT a general assistant. If the user asks for anything unrelated "
+        "(jokes, code unrelated to control, general knowledge, etc.), politely decline in "
+        "one sentence and steer them back to motor/controller design. Do not answer it.\n\n"
         "You hold ONE always-on conversation with an engineer and drive a deterministic "
         "engine through tools. Absolute rules:\n"
-        "- Tools COMPUTE every number. You NEVER invent gains, metrics, or pass/fail.\n"
+        "- Tools COMPUTE every number. You NEVER invent gains, metrics, feasibility, or "
+        "pass/fail. Physics and certification are code-enforced; you may explain, never override.\n"
         "- For ANY question about results (\"what was the settling time?\") you MUST call "
-        "query_results and quote only the numbers it returns.\n"
-        "- Workflow: define_plant -> set_spec -> check_feasibility -> (push back in plain "
-        "language if infeasible until the spec is physically achievable) -> let the engineer "
-        "pick a controller type -> design_controller -> report results -> modify/redesign on "
-        "request -> export (a certification package, gated by simulation results).\n"
-        "- If the engineer describes a motor, call define_plant. If they state performance "
-        "goals, call set_spec. Only ask a clarifying question when you are genuinely blocked.\n"
-        f"- Controller types you can design: {list(CONTROLLER_TYPES)}.\n"
-        "Keep replies short and engineer-friendly."
+        "query_results and quote only the numbers it returns.\n\n"
+        "WORKFLOW (walk the engineer through it, one stage at a time):\n"
+        "1. MOTOR: When the engineer describes a motor, call define_plant. Read back the "
+        "derived characteristics and any warnings. If the numbers look non-physical or "
+        "unusual, push back and help fix them. When the engineer is happy, call "
+        "confirm(stage='motor') to lock it in.\n"
+        "2. SPEC: Ask for performance goals; call set_spec, then check_feasibility. If the "
+        "spec is infeasible or tight, explain plainly and negotiate until it is achievable. "
+        "When the engineer agrees, call confirm(stage='spec').\n"
+        "3. CONTROLLER: Only after the spec is confirmed, ask which controller family they "
+        f"want ({list(CONTROLLER_TYPES)}) or offer 'auto'. Ask any needed clarifying "
+        "questions, then call design_controller.\n"
+        "4. RESULTS: Report the outcome grounded in query_results. Offer to modify/redesign. "
+        "Apply changes via modify + design_controller; the session remembers everything.\n"
+        "5. EXPORT: When the engineer is satisfied, call export (a certification package, "
+        "gated by simulation results).\n\n"
+        "Only ask a clarifying question when genuinely blocked. Keep replies short and "
+        "engineer-friendly."
     )
 
 
@@ -825,6 +910,24 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "name": "check_feasibility",
             "description": "Deterministic physics check: is the current spec achievable on the current motor?",
             "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "confirm",
+            "description": (
+                "Record the engineer's explicit agreement to advance the workflow. Call "
+                "with stage='motor' once they approve the motor, or stage='spec' once they "
+                "approve the requirements. Do NOT call this without clear user agreement."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "stage": {"type": "string", "enum": ["motor", "spec"]},
+                },
+                "required": ["stage"],
+            },
         },
     },
     {

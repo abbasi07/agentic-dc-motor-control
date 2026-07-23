@@ -153,6 +153,68 @@ def test_design_specialist_types_store_scorecard():
         assert out["n_scenarios"] == 1
 
 
+def test_confirm_gates_advance_phase():
+    from agents.workflow import (
+        PHASE_CONTROLLER_SELECTION,
+        PHASE_MOTOR_AGREED,
+        PHASE_MOTOR_NEGOTIATION,
+        PHASE_SPEC_NEGOTIATION,
+    )
+
+    session = DesignAgentSession.create(plant_id="dc_motor_ctms")
+    session.define_plant(J=0.01, b=0.1, K=0.01, R=1.0, L=0.5, V_max=12.0, name="m")
+    assert session.phase() == PHASE_MOTOR_NEGOTIATION
+
+    session.confirm("motor")
+    assert session.job.motor_confirmed is True
+    assert session.phase() == PHASE_MOTOR_AGREED
+
+    session.load_spec(_easy_step_spec())
+    assert session.phase() == PHASE_SPEC_NEGOTIATION
+
+    out = session.confirm("spec")
+    assert out["confirmed"] == "spec"
+    assert session.phase() == PHASE_CONTROLLER_SELECTION
+
+
+def test_confirm_without_artifact_errors():
+    session = DesignAgentSession.create(plant_id="dc_motor_ctms")
+    assert "error" in session.confirm("motor")
+    assert "error" in session.confirm("spec")
+    assert "error" in session.confirm("bogus")
+
+
+def test_redefining_motor_resets_confirmation():
+    session = DesignAgentSession.create(plant_id="dc_motor_ctms")
+    session.define_plant(J=0.01, b=0.1, K=0.01, R=1.0, L=0.5, name="m")
+    session.confirm("motor")
+    assert session.job.motor_confirmed is True
+    session.define_plant(J=0.02, b=0.1, K=0.01, R=1.0, L=0.5, name="m2")
+    assert session.job.motor_confirmed is False
+
+
+def test_workspace_reflects_designed_session():
+    from agents.workflow import PHASE_RESULTS_REVIEW
+
+    session = _designed_session()
+    ws = session.workspace()
+    assert ws["phase"] == PHASE_RESULTS_REVIEW
+    assert "results" in ws["artifacts"]
+    assert "spec" in ws["artifacts"]
+    assert ws["artifacts"]["results"]["summary"]["all_constraints_pass"] is True
+
+
+def test_off_topic_chat_is_refused_without_openai():
+    # The domain guard short-circuits before any OpenAI call, so this is safe offline.
+    session = DesignAgentSession.create(plant_id="dc_motor_ctms")
+    reply = session.chat("write me a poem about spring")
+    assert "control" in reply.lower()
+    assert session.job.chat[-1]["role"] == "assistant"
+    assert session.job.chat[-1]["content"] == reply
+    # No model transcript should have been created for a deterministic refusal.
+    assert session.messages == []
+
+
 def test_dispatch_tool_records_log_and_handles_unknown():
     session = _designed_session()
     ok = session._dispatch_tool("query_results", '{"question": "did it pass?"}')

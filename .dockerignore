@@ -1,0 +1,38 @@
+# Keep the build context lean and never leak secrets or host artifacts.
+.git
+.gitignore
+.venv
+__pycache__/
+*.py[oc]
+*.egg-info
+build/
+dist/
+wheels/
+
+# Secrets (compose injects real values via env_file at runtime)
+.env
+.env.local
+*.pem
+
+# Local outputs / caches
+exports/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.log
+
+# Local databases (host/dev/test SQLite only; Postgres runs in its own service)
+*.db
+*.sqlite
+*.sqlite3
+
+# Frontend (built in its own image in E3)
+web/node_modules/
+web/.next/
+
+# Docs / notebooks / OS cruft
+.ipynb_checkpoints/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
