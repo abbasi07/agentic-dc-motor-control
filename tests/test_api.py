@@ -60,3 +60,37 @@ def test_agent_chat_route_wires_tool_agent():
     roles = [m["role"] for m in out["chat"]]
     assert roles[-2:] == ["user", "assistant"]
     assert out["chat"][-1]["content"] == "Tool-grounded reply."
+
+
+# --------------------------------------------------------------------------- #
+# CORS (E3): the React/Next UI runs on a different origin than the API, so the
+# browser needs the allow-list to send the Bearer key + read the SSE stream.
+# --------------------------------------------------------------------------- #
+def test_cors_preflight_allows_web_origin():
+    client = TestClient(app)
+    res = client.options(
+        "/jobs",
+        headers={
+            "Origin": "http://localhost:3000",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
+    assert res.status_code == 200
+    assert res.headers.get("access-control-allow-origin") == "http://localhost:3000"
+    allow_headers = (res.headers.get("access-control-allow-headers") or "").lower()
+    assert "authorization" in allow_headers
+
+
+def test_cors_actual_request_echoes_origin():
+    client = TestClient(app)
+    res = client.get("/health", headers={"Origin": "http://localhost:3000"})
+    assert res.headers.get("access-control-allow-origin") == "http://localhost:3000"
+
+
+def test_csv_env_parsing():
+    from saas.config import _csv_env
+
+    assert _csv_env("COPILOT_CORS_ORIGINS", "http://localhost:3000") == (
+        "http://localhost:3000",
+    )

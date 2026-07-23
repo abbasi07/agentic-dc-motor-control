@@ -53,6 +53,8 @@ services:
       COPILOT_AUTH: "true"
       COPILOT_DEV_API_KEY: ${COPILOT_DEV_API_KEY:-dev-local-key}
       COPILOT_API_KEY_PEPPER: ${COPILOT_API_KEY_PEPPER:-copilot-dev-pepper}
+      # E3: allow the Next.js web app's browser origin to call the API (CORS).
+      COPILOT_CORS_ORIGINS: ${COPILOT_CORS_ORIGINS:-http://localhost:3000}
       # Windows-friendly file watching for --reload across the bind mount.
       WATCHFILES_FORCE_POLLING: "true"
     volumes:
@@ -85,6 +87,28 @@ services:
         condition: service_healthy
     # Queue name finalized in E2.3; RQ worker consumes design-run jobs.
     command: uv run rq worker --url ${REDIS_URL:-redis://redis:6379/0} copilot
+
+  # E3: React/Next two-pane UI (RIGHT = chat + activity; LEFT = dynamic artifact tabs).
+  # Consumes GET /jobs/{id}/events over SSE and renders trajectory data client-side. The
+  # browser (not this container) talks to the API, so NEXT_PUBLIC_* point at the host-
+  # published API port. Source is bind-mounted for hot reload; node_modules stays in an
+  # anonymous volume so the host (Windows) modules never shadow the container's.
+  web:
+    build: ./web
+    environment:
+      # Public (browser-visible) config: the API base URL + the dev bootstrap key so the
+      # UI works out of the box. Real per-user accounts come later (decisions).
+      NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://localhost:8000}
+      NEXT_PUBLIC_COPILOT_API_KEY: ${COPILOT_DEV_API_KEY:-dev-local-key}
+      WATCHPACK_POLLING: "true"
+    volumes:
+      - ./web:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    command: sh -c "npm install && npm run dev"
 
 volumes:
   pgdata:

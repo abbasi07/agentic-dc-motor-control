@@ -64,6 +64,11 @@ class Settings:
     # via the SSE endpoint. Off by default so host tools / the OpenAI-free test-suite
     # never attempt a Redis connection; Compose sets it true for the api + worker.
     events_enabled: bool
+    # E3 React/Next UI: browser origins allowed to call the API (CORS). The web app runs
+    # on a different origin (default http://localhost:3000) than the API, so the browser
+    # needs an explicit allow-list to send the Bearer key + read the SSE stream. Comma-
+    # separated; "*" allows any origin (dev convenience only — do not use with real keys).
+    cors_allow_origins: tuple[str, ...]
 
     @property
     def has_openai(self) -> bool:
@@ -89,6 +94,11 @@ def _bool_env(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _csv_env(name: str, default: str) -> tuple[str, ...]:
+    raw = os.getenv(name, default)
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings(
@@ -107,6 +117,7 @@ def get_settings() -> Settings:
         db_echo=_bool_env("COPILOT_DB_ECHO", False),
         async_runs_enabled=_bool_env("COPILOT_ASYNC_RUNS", False),
         events_enabled=_bool_env("COPILOT_EVENTS", False),
+        cors_allow_origins=_csv_env("COPILOT_CORS_ORIGINS", "http://localhost:3000"),
     )
 
 

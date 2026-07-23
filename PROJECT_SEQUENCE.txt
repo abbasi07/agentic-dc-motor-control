@@ -181,7 +181,10 @@ Transfer function (speed from voltage):
 [x] Streamlit chat-first UI: custom motor params, always-on chat, family pick, results/export
 [x] SaaS hardening: persistence, auth/multi-tenant, async runs, live events, budgets
     (workstream E / Phase E2.1–E2.6) — DONE, verified live on docker compose (Bearer key)
-[ ] React/Next two-pane UI over the SSE stream (Phase E3) — NEXT
+[x] React/Next two-pane UI over the SSE stream (Phase E3) — FIRST CUT DONE
+    (web/ Next.js app: chat + activity RIGHT, dynamic artifact tabs LEFT; SSE + Bearer;
+    Recharts trajectories; CORS added to the API; web service in docker-compose)
+[ ] E3 polish: live OpenAI chat turn in-browser, frontend tests, real accounts — NEXT
 [ ] Agent eval harness extensions (workstream F) — throughout
 
 

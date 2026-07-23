@@ -113,6 +113,30 @@ app = FastAPI(
 )
 
 
+# CORS (E3): the React/Next UI runs on a different origin than the API, so the browser
+# needs an explicit allow-list to send the Bearer key and read the SSE stream. Origins
+# come from settings (COPILOT_CORS_ORIGINS); defaults to http://localhost:3000.
+def _install_cors(fastapi_app: FastAPI) -> None:
+    from fastapi.middleware.cors import CORSMiddleware
+
+    from .config import get_settings
+
+    origins = list(get_settings().cors_allow_origins)
+    allow_all = "*" in origins
+    fastapi_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"] if allow_all else origins,
+        # Credentials + wildcard origin are incompatible per the CORS spec; we only send
+        # a Bearer header (not cookies), so disable credentials when allowing any origin.
+        allow_credentials=not allow_all,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+
+_install_cors(app)
+
+
 class CreateJobRequest(BaseModel):
     plant_id: str = DEFAULT_PLANT_ID
     mode: Literal["script", "heuristic", "llm"] = "heuristic"

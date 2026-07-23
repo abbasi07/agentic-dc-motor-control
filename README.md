@@ -22,6 +22,36 @@ Default model: `OPENAI_MODEL=gpt-5.4-nano`. Do not commit `.env`.
 NL → `DesignSpec` and LLM orchestrator actions are **OpenAI-only** (no regex fallback).
 If the key is missing, examples/API print a clear message and fail.
 
+## Full stack (Docker Compose + React UI)
+
+The production-shaped stack — Postgres 16, Redis 7, the FastAPI API, the RQ worker, and
+the **React/Next two-pane UI** — runs under Docker Compose:
+
+```powershell
+copy .env.example .env    # then set OPENAI_API_KEY (the chat agent is OpenAI-only)
+docker compose up         # db + redis + api + worker + web
+```
+
+- **Web UI:** http://localhost:3000 — chat-first controller design. RIGHT pane = chat +
+  live agent activity; LEFT pane = dynamic artifact tabs (Motor · Requirements ·
+  Feasibility · Results & Plots · Export) that appear as the conversation reaches each
+  stage. Trajectories render client-side; the UI streams `GET /jobs/{id}/events` over SSE
+  and sends `Authorization: Bearer <key>`.
+- **API:** http://localhost:8000 (`/docs` = Swagger). Persistence + async runs + live
+  events + auth are all **on** in Compose. The dev bootstrap key `dev-local-key` is
+  seeded on startup (override `COPILOT_DEV_API_KEY` / `COPILOT_API_KEY_PEPPER` in `.env`).
+- **Design flow:** the LLM plans and talks; deterministic tools compute every number; the
+  workspace the UI renders is reflect-only (the LLM never authors UI or event types).
+
+Run the web app on its own (host) against a running API:
+
+```powershell
+cd web
+copy .env.example .env.local
+npm install
+npm run dev   # http://localhost:3000
+```
+
 ## Design Copilot (local SaaS MVP)
 
 Hybrid chat + locked DesignSpec panel + results/export. Tools compute metrics; chat only plans and explains.
@@ -54,7 +84,8 @@ type, and ask follow-ups like *"what was the settling time?"* in one conversatio
 | `dc_motor/` | Plant, controllers, **state-space model**, metrics, scenarios, eval, specs, `FailureDigest`, **plant registry** |
 | `agents/` | Spec agent, PID tuner, orchestrator, **controller registry**, specialist designers, advanced controllers, **critic**, certification / export |
 | `experiments/` | Ablation suite (`run_ablation`, comparison table) |
-| `saas/` | FastAPI jobs API + Streamlit UI + clarify/feedback |
+| `saas/` | FastAPI jobs API + persistence/queue/events/auth + Streamlit (frozen) |
+| `web/` | React/Next two-pane UI (E3): chat + live activity, dynamic artifact tabs |
 | `examples/` | Runnable CLI demos (`lab_01` … `lab_08`) |
 | `tests/` | Smoke / unit tests (mocked Spec Interpreter; no OpenAI required) |
 

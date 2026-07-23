@@ -1,6 +1,37 @@
 # Continuity prompt — paste into a new chat
 
-> **Status (2026-07-23) — Phase E2.6 (full docker-compose end-to-end verification with
+> **Status (2026-07-23) — Phase E3 (React/Next two-pane UI) FIRST CUT DONE.** New `web/`
+> Next.js 14 (App Router) + TypeScript + Tailwind app, added as the `web` service in
+> docker-compose (port 3000; `npm install && npm run dev`; browser talks to the host-
+> published API, `NEXT_PUBLIC_API_BASE`/`NEXT_PUBLIC_COPILOT_API_KEY` injected). **Two-pane
+> layout** (`components/Copilot.tsx`): RIGHT = chat + agent-activity tabs
+> (`ChatPane.tsx`), LEFT = dynamic artifact tabs (`ArtifactPanel.tsx`) — Motor /
+> Requirements / Feasibility / Results & Plots / Export — that APPEAR as
+> `workspace.artifacts` fill in (reflect-only; fixed component types; LLM never authors
+> UI). `TopBar.tsx` = 5-stage phase stepper + live SSE connection dot + API-key editor +
+> New session. Chat drives the OpenAI Design Agent via `POST /jobs/{id}/agent`; the
+> transcript is authoritative from the response, while SSE (`lib/sse.ts`, via
+> `@microsoft/fetch-event-source` so the Bearer header rides along — native EventSource
+> can't) feeds the activity feed (`tool.*`/`run.status`/`refusal`/`error`) and pushes
+> `workspace.updated` into the left panel. Trajectories render client-side with Recharts
+> (`artifacts/TrajectoryChart.tsx`, downsampled to ≤400 pts); Export tab downloads the
+> cert zip via an authenticated fetch→object-URL. Typed API client `lib/api.ts` (Bearer
+> on every /jobs call), contracts mirrored in `lib/types.ts` (workspace + fixed
+> `EVENT_TYPES` + job dict). **Backend enabler:** `saas/api.py` now installs
+> `CORSMiddleware` (origins from `settings.cors_allow_origins` = `COPILOT_CORS_ORIGINS`,
+> default `http://localhost:3000`); `saas/config.py` gained `cors_allow_origins` + a
+> `_csv_env` helper; compose api sets `COPILOT_CORS_ORIGINS`; `.env.example` documents it.
+> **Verified:** `npm run build` compiles + typechecks clean; dev server serves `/` 200;
+> CORS preflight + actual + SSE all echo `access-control-allow-origin: http://localhost:3000`
+> with `authorization` allowed; full stack (`docker compose up`) builds the `web` image.
+> Host suite **180 tests pass** (was 177; +3 CORS/`_csv_env`). NEXT: **E3 polish** — drive
+> a live OpenAI chat turn end-to-end in the browser (needs OPENAI_API_KEY), add
+> loading/error affordances, optional per-tab empty→filled transitions, and **F**
+> (frontend has no tests yet; consider a light component/contract test + extend
+> `experiments/ablation.py`). Then real accounts (replace the dev bootstrap key).
+>
+> ---
+> **Prior status (2026-07-23) — Phase E2.6 (full docker-compose end-to-end verification with
 > a Bearer key) DONE. Phase E2 is COMPLETE.** Brought the whole stack up
 > (`docker compose up -d --build`: db + redis + api + worker, all healthy; api runs
 > `alembic upgrade head` then uvicorn `--reload`) and verified the full pipeline live on
