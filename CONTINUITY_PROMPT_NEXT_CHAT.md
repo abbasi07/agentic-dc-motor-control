@@ -1,6 +1,39 @@
 # Continuity prompt — paste into a new chat
 
-> **Status (2026-07-23) — Phase E2.5 (API-key auth + multi-tenant + rate limits +
+> **Status (2026-07-23) — Phase E2.6 (full docker-compose end-to-end verification with
+> a Bearer key) DONE. Phase E2 is COMPLETE.** Brought the whole stack up
+> (`docker compose up -d --build`: db + redis + api + worker, all healthy; api runs
+> `alembic upgrade head` then uvicorn `--reload`) and verified the full pipeline live on
+> real Postgres 16 + Redis 7, OpenAI-free. Results: `/health` 200 public; `POST /jobs`
+> 401 (no key) / 401 (bad key) / 200 (`Authorization: Bearer dev-local-key`); created a
+> job, seeded a validated `DesignSpec` OpenAI-free straight through the repository
+> (`scripts/seed_spec.py`, NEW — `interpret_spec` is OpenAI-only by design, so this
+> injects the spec to exercise the plumbing); `POST /jobs/{id}/run` returned
+> `status="queued"` (+ `queue_job_id=design-<id>`); the RQ **worker** picked it up
+> (`/status` `queue_state` started→finished) and flipped the job running→**completed**;
+> the API served the completed job via the E2.2 rehydrate/`rev` contract (DB peek:
+> `status=completed`, `rev=7`, `tenant_id=dev`). **SSE** (`GET /jobs/{id}/events` with
+> the Bearer key) streamed the current `workspace.updated` snapshot first, then
+> `run.status` **queued (API process) → running → completed (worker process)** interleaved
+> with `workspace.updated` — proving cross-process fan-out over Redis pub/sub. The
+> worker produced a **certified** design (PID Kp60/Ki100/Kd0, all constraints pass:
+> settling 1.96s ≤ 2.0, overshoot 0%, sse 0.0037) and respected budgets
+> (`_capped_iterations` under `MAX_DESIGN_ITERATIONS=12`) + tenant (persisted
+> `tenant_id=dev` unchanged). **Export cross-process** (`POST /export` from the API,
+> whose in-proc session was empty — rebuilt the candidate from persisted JSON via
+> `saas.serialization.rehydrated_candidate`) → `status=exported`, zip written;
+> `GET /export/download` 200 `application/zip` (2982 bytes); certification ALLOW.
+> **Cross-tenant scoping** confirmed live: a second-tenant (`acme`) key GETs dev's job →
+> **404** (no existence leak, not 403) and `GET /jobs` → `[]`. DB peek: only the dev
+> bootstrap `api_keys` row, `key_hash` 64 hex chars (SHA-256), raw never stored. Host
+> suite still **177 tests pass**, lints clean. NEXT: **E3** — React/Next two-pane UI
+> (RIGHT = chat + agent activity; LEFT = dynamic artifact tabs Motor/Requirements/
+> Feasibility/Results-Plots/Export) over the SSE stream (fixed `EVENT_TYPES`, renders
+> trajectory data client-side, sends `Authorization: Bearer <key>`); add a `web` service
+> to docker-compose. LLM never authors UI or event types. F throughout.
+>
+> ---
+> **Prior status (2026-07-23) — Phase E2.5 (API-key auth + multi-tenant + rate limits +
 > budgets) DONE.** All `/jobs` routes now authenticate + scope by tenant. New:
 > `saas/auth.py` — `AuthManager` (peppered SHA-256 `hash_key`; `create_api_key` returns
 > the RAW key once and stores only the hash; `verify_api_key` = one indexed lookup that

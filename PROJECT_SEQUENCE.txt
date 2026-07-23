@@ -179,7 +179,9 @@ Transfer function (speed from voltage):
 [x] Chat-first tool-calling Design Agent + grounded query_results (workstream D)
 [x] Controller registry + real controllers: LQR/LQG, proper MPC, MRAC, Fuzzy (workstream C)
 [x] Streamlit chat-first UI: custom motor params, always-on chat, family pick, results/export
-[ ] SaaS hardening: persistence, auth/multi-tenant, async runs, budgets (workstream E) — NEXT
+[x] SaaS hardening: persistence, auth/multi-tenant, async runs, live events, budgets
+    (workstream E / Phase E2.1–E2.6) — DONE, verified live on docker compose (Bearer key)
+[ ] React/Next two-pane UI over the SSE stream (Phase E3) — NEXT
 [ ] Agent eval harness extensions (workstream F) — throughout
 
 
