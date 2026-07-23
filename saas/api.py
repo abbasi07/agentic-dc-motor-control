@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, AsyncIterator, Literal
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -283,6 +284,66 @@ def workspace(job_id: str) -> dict[str, Any]:
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return service.workspace_for_job(job)
+
+
+async def _job_event_stream(bus: Any, job_id: str, request: Request, initial: dict[str, Any]) -> AsyncIterator[dict[str, str]]:
+    """Async SSE generator: current snapshot first, then live events off Redis pub/sub.
+
+    Redis pub/sub is synchronous, so ``get_message`` runs in a threadpool to avoid
+    blocking the event loop; the loop also polls ``request.is_disconnected()`` so the
+    subscription is torn down when the browser closes the stream.
+    """
+    from anyio import to_thread
+
+    from .events import _decode_message
+
+    # Emit the current reflect-only state immediately so the UI renders without waiting.
+    yield {"event": initial["type"], "data": json.dumps(initial, default=str)}
+
+    pubsub = bus.subscribe(job_id)
+    try:
+        while True:
+            if await request.is_disconnected():
+                break
+            message = await to_thread.run_sync(lambda: pubsub.get_message(timeout=1.0))
+            event = _decode_message(message)
+            if event is None:
+                continue
+            yield {"event": str(event.get("type", "message")), "data": json.dumps(event, default=str)}
+    finally:
+        try:
+            await to_thread.run_sync(pubsub.close)
+        except Exception:  # noqa: BLE001 - teardown must never raise
+            pass
+
+
+@app.get("/jobs/{job_id}/events")
+async def job_events(job_id: str, request: Request):
+    """Server-Sent Events stream of live updates for one job (E2.4).
+
+    Fans out ``message.delta`` / ``tool.started`` / ``tool.finished`` / ``run.status`` /
+    ``workspace.updated`` / ``refusal`` / ``error`` events published by BOTH the API
+    (chat loop) and the RQ worker (design run) over Redis pub/sub. The first event is
+    always the current reflect-only workspace snapshot.
+    """
+    from sse_starlette.sse import EventSourceResponse
+
+    from .events import EVENT_WORKSPACE_UPDATED, get_event_bus
+
+    try:
+        job = get_job_store().get(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    bus = get_event_bus()
+    if bus is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Live events are disabled. Set COPILOT_EVENTS=true (needs Redis).",
+        )
+
+    initial = bus.build_event(job_id, EVENT_WORKSPACE_UPDATED, service.workspace_for_job(job))
+    return EventSourceResponse(_job_event_stream(bus, job_id, request, initial), ping=15)
 
 
 @app.get("/jobs/{job_id}/scorecard")

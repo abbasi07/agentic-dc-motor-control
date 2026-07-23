@@ -1,25 +1,33 @@
 # Continuity prompt — paste into a new chat
 
-> **Status (2026-07-23) — Phase E2.3 (Async design runs via RQ) DONE.** CPU-heavy design
-> runs are now enqueued to the RQ worker so FastAPI stays responsive. New: `saas/queue.py`
-> — `get_redis_connection`/`get_queue` (queue = `settings.design_queue`, default `copilot`),
-> module-level worker task `run_design_job(job_id, …)` (rehydrates the job from the active
-> store and calls `service.confirm_and_run` — never receives a live controller), plus
-> `enqueue_design_run` + `fetch_queue_job`. `saas/service.py`: `enqueue_design_run(job)`
-> marks the job `queued`, persists BEFORE enqueue (so the worker sees committed state / poll
-> reflects it), records `queue_job_id`; `run_status(job)` poll payload; shared
-> `_ensure_spec_for_run`. `saas/api.py`: `POST /jobs/{id}/run` enqueues when
-> `async_runs_enabled` else runs inline; new `GET /jobs/{id}/status` poll path. `DesignJob`
-> gained `queue_job_id` (+ `queued` status; in `data` JSON so **no migration**);
-> `agents/workflow.py` treats `queued` as the `designing` phase. `saas/config.py`:
-> `async_runs_enabled` (`COPILOT_ASYNC_RUNS`, default False — needs persistence; Compose api
-> sets it true). Result crosses the worker→API boundary via the E2.2 serialize/rehydrate +
-> `rev` contract. `tests/test_async_runs.py` (+9): enqueue marks queued, inline queue runs +
-> persists, worker task in a fresh store + API rehydrate, RQ `SimpleWorker` burst drain, and
-> both `/run` (async + sync) + `/status` routes — all over `fakeredis` + SQLite, OpenAI-free.
-> **144 tests pass** (was 135). NEXT: **E2.4** — SSE endpoint + Redis pub/sub events
-> (message.delta, tool.started/finished, workspace.updated, run.status, refusal, error;
-> sse-starlette fanned out over Redis pub/sub; fakeredis in tests), then E2.5 auth.
+> **Status (2026-07-23) — Phase E2.4 (Live events: SSE + Redis pub/sub) DONE.** The API
+> (chat loop) and the RQ worker (design run) now publish structured events over Redis
+> pub/sub and clients stream them via SSE, so any connected browser sees progress
+> regardless of which process produced the event. New: `saas/events.py` — `EventBus`
+> (`publish(job_id, type, data)` best-effort/never-raises + numpy/NaN coerced via
+> `to_jsonable`; `subscribe`/`listen`/`build_event`; channel `copilot:events:{job_id}`),
+> fixed event enum `EVENT_TYPES` = `message.delta`, `tool.started`, `tool.finished`,
+> `workspace.updated`, `run.status`, `refusal`, `error`, plus `get_event_bus()` (None when
+> disabled → publishing is a no-op) and `publish_event()`. `saas/api.py`: new
+> `GET /jobs/{id}/events` SSE route (sse-starlette `EventSourceResponse`, `ping=15`) — 404
+> unknown job / 503 when events disabled (bounded), first frame is the current
+> `workspace.updated` snapshot, then live events; async generator `_job_event_stream` polls
+> sync pub/sub in a threadpool and stops on `request.is_disconnected()`. `saas/service.py`:
+> `confirm_and_run` publishes `run.status` running→completed (+`error`/failed on except) +
+> `workspace.updated`; `enqueue_design_run` publishes `run.status` queued; `get_agent_session`
+> attaches the bus to the agent. `agents/design_agent.py`: `events` field (duck-typed,
+> not snapshotted) + `_emit`/`_emit_workspace`; emits `tool.started`/`tool.finished`/
+> `workspace.updated` in `_dispatch_tool`, `refusal` (deterministic, no model call), and
+> `message.delta` on final replies — kept decoupled from saas via literal type strings.
+> `saas/config.py`: `events_enabled` (`COPILOT_EVENTS`, default False). Compose api+worker
+> set `COPILOT_EVENTS=true`; `.env.example` documents it. `tests/test_events.py` (+14):
+> bus round-trip + best-effort + numpy coercion, service run.status transitions
+> (queued/running/completed/failed), agent tool.*/refusal/message.delta (OpenAI client
+> mocked), SSE 404/503 + initial-snapshot generator — all `fakeredis`, OpenAI-free.
+> **158 tests pass** (was 144). NEXT: **E2.5** — API-key auth middleware (hashed keys in
+> Postgres, Bearer, dev bootstrap key `COPILOT_DEV_API_KEY` seeded on startup) + tenant
+> scoping on ALL `/jobs` routes + Redis rate limits + token/iteration budgets (surfaced
+> read-only in workspace budgets). `ApiKey` model already exists (key_hash only).
 
 ```
 Continue the project Agentic Orchestration of DC Motor Control (simulation/SaaS only — no hardware).

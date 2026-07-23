@@ -49,6 +49,12 @@ class Settings:
     # OpenAI-free test-suite run synchronously; requires persistence (worker + API are
     # separate processes that share job state through the DB). Compose sets it true.
     async_runs_enabled: bool
+    # E2.4 live events: when enabled, the API (chat) and the RQ worker (design run)
+    # publish structured events (message.delta, tool.started/finished, run.status,
+    # workspace.updated, refusal, error) over Redis pub/sub, and clients stream them
+    # via the SSE endpoint. Off by default so host tools / the OpenAI-free test-suite
+    # never attempt a Redis connection; Compose sets it true for the api + worker.
+    events_enabled: bool
 
     @property
     def has_openai(self) -> bool:
@@ -89,6 +95,7 @@ def get_settings() -> Settings:
         persistence_enabled=_bool_env("COPILOT_PERSIST", False),
         db_echo=_bool_env("COPILOT_DB_ECHO", False),
         async_runs_enabled=_bool_env("COPILOT_ASYNC_RUNS", False),
+        events_enabled=_bool_env("COPILOT_EVENTS", False),
     )
 
 

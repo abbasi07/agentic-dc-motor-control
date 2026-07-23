@@ -141,6 +141,15 @@ _QUERY_SCENARIO_ALIASES = {
 
 _NUMBER_RE = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 
+# Live-event types (E2.4). Kept as literals so agents/ stays decoupled from saas/;
+# they mirror the canonical enum in saas.events. The event *bus* is duck-typed
+# (anything exposing ``publish(job_id, type, data)``) and injected by the service layer.
+_EVT_MESSAGE_DELTA = "message.delta"
+_EVT_TOOL_STARTED = "tool.started"
+_EVT_TOOL_FINISHED = "tool.finished"
+_EVT_REFUSAL = "refusal"
+_EVT_WORKSPACE_UPDATED = "workspace.updated"
+
 
 def _fmt(value: Any) -> str:
     """Format a scorecard number for display without inventing precision."""
@@ -209,6 +218,10 @@ class DesignAgentSession:
     messages: list[dict[str, Any]] = field(default_factory=list)
     tool_log: list[dict[str, Any]] = field(default_factory=list)
     total_tokens: int = 0
+    # Optional live-event bus (E2.4), injected by the service layer. Duck-typed:
+    # anything with ``publish(job_id, type, data)``. ``None`` => events are a no-op.
+    # Not part of snapshot()/restore() (it is transport, not durable state).
+    events: Any = field(default=None, repr=False)
 
     # ------------------------------------------------------------------ #
     # Construction
@@ -365,6 +378,28 @@ class DesignAgentSession:
             job.touch()
             return {"confirmed": "spec", "phase": self.phase()}
         return {"error": "Unknown stage. Use 'motor' or 'spec'."}
+
+    # ------------------------------------------------------------------ #
+    # Live events (E2.4) — best-effort; never break a chat turn
+    # ------------------------------------------------------------------ #
+    def _emit(self, event_type: str, data: dict[str, Any] | None = None) -> None:
+        bus = self.events
+        if bus is None:
+            return
+        try:
+            bus.publish(getattr(self.job, "job_id", None), event_type, data or {})
+        except Exception:  # noqa: BLE001 - event publishing is best-effort by contract
+            pass
+
+    def _emit_workspace(self) -> None:
+        """Emit the current reflect-only workspace snapshot (numbers all tool-computed)."""
+        if self.events is None:
+            return
+        try:
+            snapshot = self.workspace()
+        except Exception:  # noqa: BLE001
+            return
+        self._emit(_EVT_WORKSPACE_UPDATED, snapshot)
 
     # ------------------------------------------------------------------ #
     # Workflow projection (reflect-only)
@@ -696,6 +731,7 @@ class DesignAgentSession:
             self.job.chat.append({"role": "user", "content": user_message})
             self.job.chat.append({"role": "assistant", "content": reply})
             self.job.touch()
+            self._emit(_EVT_REFUSAL, {"content": reply})
             return reply
 
         key = os.getenv("OPENAI_API_KEY")
@@ -731,6 +767,7 @@ class DesignAgentSession:
                 self.messages.append({"role": "assistant", "content": content})
                 self.job.chat.append({"role": "assistant", "content": content})
                 self.job.touch()
+                self._emit(_EVT_MESSAGE_DELTA, {"content": content, "final": True})
                 return content
 
             # Record the assistant turn that requested tool calls.
@@ -770,6 +807,7 @@ class DesignAgentSession:
         self.messages.append({"role": "assistant", "content": content})
         self.job.chat.append({"role": "assistant", "content": content})
         self.job.touch()
+        self._emit(_EVT_MESSAGE_DELTA, {"content": content, "final": True})
         return content
 
     def _dispatch_tool(self, name: str, arguments: str | dict[str, Any]) -> dict[str, Any]:
@@ -778,11 +816,15 @@ class DesignAgentSession:
         except json.JSONDecodeError as exc:
             return {"error": f"Could not parse tool arguments: {exc}"}
 
+        self._emit(_EVT_TOOL_STARTED, {"tool": name, "args": args})
         try:
             result = self._call_tool(name, args)
         except Exception as exc:  # noqa: BLE001 — surface tool errors to the model
             result = {"error": f"{type(exc).__name__}: {exc}"}
         self.tool_log.append({"tool": name, "args": args, "result": result})
+        self._emit(_EVT_TOOL_FINISHED, {"tool": name, "result": result})
+        # A tool may have mutated durable state (motor/spec/scorecard/…) — reflect it.
+        self._emit_workspace()
         return result
 
     def _call_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:

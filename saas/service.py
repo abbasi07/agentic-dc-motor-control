@@ -17,6 +17,12 @@ from dc_motor.registry import DEFAULT_PLANT_ID, get_plant_spec, list_plants, mot
 from dc_motor.specs import DesignSpec, design_spec_from_dict
 
 from .clarify import critique_design_spec
+from .events import (
+    EVENT_ERROR,
+    EVENT_RUN_STATUS,
+    EVENT_WORKSPACE_UPDATED,
+    get_event_bus,
+)
 from .feedback import apply_user_feedback
 from .jobs import DesignJob, JobStore, default_export_dir, get_job_store
 from .present import design_finished_message, feedback_plan_message
@@ -29,6 +35,29 @@ def _save(job: DesignJob) -> DesignJob:
     persistence is enabled so state survives restarts and reaches the worker process.
     """
     return get_job_store().save(job)
+
+
+# --------------------------------------------------------------------------- #
+# Live events (E2.4) — published by BOTH the API (inline) and the RQ worker so any
+# connected SSE client sees run.status transitions + workspace snapshots. Best-effort:
+# a no-op when events are disabled (host tools / tests) and never raises.
+# --------------------------------------------------------------------------- #
+def _publish_run_status(job: DesignJob) -> None:
+    bus = get_event_bus()
+    if bus is None:
+        return
+    bus.publish(
+        job.job_id,
+        EVENT_RUN_STATUS,
+        {"status": job.status, "error": job.error, "queue_job_id": job.queue_job_id},
+    )
+
+
+def _publish_workspace(job: DesignJob) -> None:
+    bus = get_event_bus()
+    if bus is None:
+        return
+    bus.publish(job.job_id, EVENT_WORKSPACE_UPDATED, workspace_for_job(job))
 
 
 def create_job(
@@ -206,6 +235,8 @@ def confirm_and_run(
     job.error = None
     job.touch()
     _save(job)  # persist "running" so status is visible while the worker computes
+    _publish_run_status(job)  # queued/inline -> running (worker or API process)
+    _publish_workspace(job)
     iters = max_iterations if max_iterations is not None else job.max_iterations
 
     # A chat-defined custom motor overrides the registry plant: pass MotorParams
@@ -233,6 +264,10 @@ def confirm_and_run(
         job.error = str(exc)
         job.touch()
         _save(job)
+        _publish_run_status(job)  # running -> failed
+        bus = get_event_bus()
+        if bus is not None:
+            bus.publish(job.job_id, EVENT_ERROR, {"error": job.error, "where": "design_run"})
         raise
 
     job._session = session
@@ -260,7 +295,10 @@ def confirm_and_run(
         )
     job.chat.append({"role": "assistant", "content": summary})
     job.touch()
-    return _save(job)
+    saved = _save(job)
+    _publish_run_status(job)  # running -> completed
+    _publish_workspace(job)  # scorecard + plots now available to the client
+    return saved
 
 
 def _ensure_spec_for_run(job: DesignJob) -> None:
@@ -297,7 +335,11 @@ def enqueue_design_run(
     rq_job = _enqueue(job.job_id, max_iterations=max_iterations, queue=queue)
     job.queue_job_id = rq_job.id
     job.touch()
-    return _save(job)
+    saved = _save(job)
+    # Tell any connected client the run is queued (the worker will emit running/completed).
+    _publish_run_status(job)
+    _publish_workspace(job)
+    return saved
 
 
 def run_status(job: DesignJob) -> dict[str, Any]:
@@ -407,6 +449,9 @@ def get_agent_session(job: DesignJob):
 
     if job._agent is None:
         job._agent = DesignAgentSession(job=job, model=None).restore(job.agent_state)
+    # Attach the live-event bus (E2.4) so the chat loop can stream message.delta /
+    # tool.started/finished / refusal / workspace.updated. ``None`` when disabled.
+    job._agent.events = get_event_bus()
     return job._agent
 
 

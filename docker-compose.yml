@@ -45,6 +45,8 @@ services:
       COPILOT_PERSIST: "true"
       # E2.3: enqueue CPU-heavy design runs to the RQ worker so the API stays responsive.
       COPILOT_ASYNC_RUNS: "true"
+      # E2.4: publish live events over Redis pub/sub + serve the SSE stream endpoint.
+      COPILOT_EVENTS: "true"
       # Windows-friendly file watching for --reload across the bind mount.
       WATCHFILES_FORCE_POLLING: "true"
     volumes:
@@ -66,6 +68,8 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://copilot:copilot@db:5432/copilot}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       COPILOT_PERSIST: "true"
+      # E2.4: the worker publishes run.status + workspace.updated so SSE clients see progress.
+      COPILOT_EVENTS: "true"
     volumes:
       - .:/app
     depends_on:
