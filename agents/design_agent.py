@@ -38,7 +38,13 @@ from dotenv import load_dotenv
 from dc_motor.evaluate import evaluate_controller
 from dc_motor.feasibility import check_feasibility
 from dc_motor.scenarios import scenarios_from_spec
-from dc_motor.specs import DesignSpec, design_spec_from_dict
+from dc_motor.specs import (
+    DesignSpec,
+    build_disclosures,
+    design_spec_from_dict,
+    reconcile_spec_with_plant,
+    spec_sanity_advisories,
+)
 
 from .certify import certify_candidate
 from .controller_registry import CONTROLLER_TYPE_NAMES, design_by_type
@@ -53,6 +59,38 @@ load_dotenv()
 # Controller families a user can explicitly pick (design_controller(type=...)),
 # sourced from the pluggable controller registry ("auto" runs the orchestrator).
 CONTROLLER_TYPES = CONTROLLER_TYPE_NAMES
+
+
+def _spec_adjustments(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    """Human-readable diff of what the engine changed vs. what was requested.
+
+    Surfaces clamps / horizon derivations / scenario edits so the agent can report
+    them verbatim instead of silently presenting rewritten numbers.
+    """
+    adjustments: list[str] = []
+
+    b_hc = before.get("hard_constraints", {}) or {}
+    a_hc = after.get("hard_constraints", {}) or {}
+    for metric in sorted(set(b_hc) | set(a_hc)):
+        bv = b_hc.get(metric)
+        av = a_hc.get(metric)
+        if bv != av:
+            adjustments.append(f"{metric}: {bv} -> {av}")
+
+    if before.get("t_final") != after.get("t_final"):
+        adjustments.append(
+            f"t_final: {before.get('t_final')} -> {after.get('t_final')} s"
+        )
+    if before.get("required_scenarios") != after.get("required_scenarios"):
+        adjustments.append(
+            f"scenarios: {before.get('required_scenarios')} -> "
+            f"{after.get('required_scenarios')}"
+        )
+
+    # Any brand-new warnings (clamps, derivations, drops) introduced by this change.
+    new_warnings = [w for w in after.get("warnings", []) if w not in set(before.get("warnings", []))]
+    adjustments.extend(new_warnings)
+    return adjustments
 
 # Digit-free scenario phrases so grounded answers never emit a stray number that is
 # not actually a measured value (e.g. the "1" inside "step_1rads").
@@ -284,14 +322,32 @@ class DesignAgentSession:
             raise RuntimeError("No performance spec yet. Call set_spec first.")
         return job._spec
 
+    def _plant_v_max(self) -> float | None:
+        """Actuator budget from the chat-defined motor, if any."""
+        job = self.job
+        if job._motor is not None:
+            return float(job._motor.V_max)
+        if job.motor_dict and job.motor_dict.get("V_max") is not None:
+            return float(job.motor_dict["V_max"])
+        return None
+
+    def _store_reconciled_spec(self, spec: DesignSpec) -> DesignSpec:
+        """Persist DesignSpec after aligning Operating Point with plant + NL text."""
+        reconciled = reconcile_spec_with_plant(spec, plant_V_max=self._plant_v_max())
+        job = self.job
+        job._spec = reconciled
+        job.spec_dict = reconciled.to_dict()
+        return reconciled
+
     # ------------------------------------------------------------------ #
     # Deterministic helper: inject a spec without the LLM (tests / fallback)
     # ------------------------------------------------------------------ #
     def load_spec(self, spec: DesignSpec) -> None:
-        self.job._spec = spec
-        self.job.spec_dict = spec.to_dict()
+        reconciled = reconcile_spec_with_plant(spec, plant_V_max=self._plant_v_max())
+        self.job._spec = reconciled
+        self.job.spec_dict = reconciled.to_dict()
         if not self.job.nl_spec:
-            self.job.nl_spec = spec.raw_spec
+            self.job.nl_spec = reconciled.raw_spec
 
     # ================================================================== #
     # TOOLS  (each returns a JSON-serializable dict)
@@ -308,11 +364,18 @@ class DesignAgentSession:
         V_max: float | None = None,
         name: str | None = None,
     ) -> dict[str, Any]:
-        """Define the DC motor to control — either from NL text or explicit numbers."""
-        from saas.service import set_motor_from_params, set_motor_from_text
+        """Define or revise the DC motor — NL, full numbers, or a partial update."""
+        from saas.service import effective_motor_params, set_motor_from_params, set_motor_from_text
 
         numeric = {"J": J, "b": b, "K": K, "R": R, "L": L}
         has_numbers = all(v is not None for v in numeric.values())
+        provided = {k: float(v) for k, v in numeric.items() if v is not None}
+        has_existing = self.job._motor is not None or self.job.motor_dict is not None
+        partial_update = (
+            not has_numbers
+            and has_existing
+            and (bool(provided) or V_max is not None or name is not None)
+        )
 
         if has_numbers:
             payload = {k: float(v) for k, v in numeric.items()}
@@ -320,6 +383,21 @@ class DesignAgentSession:
             payload["name"] = name or "custom_dc_motor"
             # append_chat=False: this agent will write one confirmation reply itself.
             set_motor_from_params(self.job, payload, append_chat=False)
+        elif partial_update:
+            # Revise any subset of params / V_max / name on the current motor.
+            base = dict(effective_motor_params(self.job).__dict__)
+            base.update(provided)
+            if V_max is not None:
+                base["V_max"] = float(V_max)
+            else:
+                base["V_max"] = float(self._plant_v_max() or 12.0)
+            if name is not None:
+                base["name"] = name
+            elif self.job.motor_dict and self.job.motor_dict.get("name"):
+                base["name"] = self.job.motor_dict["name"]
+            else:
+                base["name"] = "custom_dc_motor"
+            set_motor_from_params(self.job, base, append_chat=False)
         elif description:
             # NL -> validated MotorModel (OpenAI-only, re-validated by physics).
             # User turn is already on job.chat from chat(); don't echo description again.
@@ -327,7 +405,13 @@ class DesignAgentSession:
                 self.job, description, append_user=False, append_chat=False
             )
         else:
-            return {"error": "Provide either a text description or all of J, b, K, R, L."}
+            return {
+                "error": (
+                    "Provide either a text description, all of J, b, K, R, L, "
+                    "or (when a motor already exists) any subset to revise — "
+                    "e.g. only V_max."
+                )
+            }
 
         motor = self.job.motor_dict or {}
         chars = motor.get("characteristics", {})
@@ -342,15 +426,20 @@ class DesignAgentSession:
                 "tau_elec_s": chars.get("tau_elec_s"),
             },
             "warnings": motor.get("warnings", []),
+            "note": (
+                "Motor (re)defined. Present the updated params/characteristics and ask "
+                "the engineer to approve; call confirm(stage='motor') only after they agree. "
+                "Prior motor/spec confirmations and design results were cleared."
+            ),
         }
 
     def set_spec(self, text: str) -> dict[str, Any]:
         """Interpret natural-language performance goals into a validated DesignSpec."""
-        spec = interpret_spec(text, model=self.model)
+        spec = interpret_spec(text, model=self.model, plant_V_max=self._plant_v_max())
         job = self.job
         job.nl_spec = text.strip()
-        job._spec = spec
-        job.spec_dict = spec.to_dict()
+        # Inherit plant V_max and convert RPM→rad/s so Operating Point matches chat.
+        spec = self._store_reconciled_spec(spec)
         job.confirmed = False
         job.spec_confirmed = False  # a (re)interpreted spec must be re-agreed
         feas = self.check_feasibility()
@@ -359,6 +448,12 @@ class DesignAgentSession:
             "feasibility": feas,
             "notes": spec.notes,
             "warnings": list(spec.warnings),
+            # Alias so the model consistently sees clamps/derivations/drops to report.
+            "adjustments": list(spec.warnings),
+            # Per-value source tags + the disclosures the agent MUST relay verbatim.
+            "provenance": dict(spec.provenance),
+            "disclosures": build_disclosures(spec),
+            "sanity_advisories": spec_sanity_advisories(spec),
         }
 
     def confirm(self, stage: str) -> dict[str, Any]:
@@ -373,11 +468,20 @@ class DesignAgentSession:
             if job.motor_dict is None and job._motor is None:
                 return {"error": "No motor to confirm yet. Define the motor first."}
             job.motor_confirmed = True
+            # If a draft spec already exists, re-align its voltage budget with the plant.
+            if job._spec is not None or job.spec_dict is not None:
+                try:
+                    self._store_reconciled_spec(self._require_spec())
+                    self.check_feasibility()
+                except RuntimeError:
+                    pass
             job.touch()
             return {"confirmed": "motor", "phase": self.phase()}
         if stage in ("spec", "specs", "requirements", "requirement"):
             if job.spec_dict is None and job._spec is None:
                 return {"error": "No requirements to confirm yet. Set the spec first."}
+            # Final reconcile before locking requirements (plant may have changed).
+            self._store_reconciled_spec(self._require_spec())
             job.spec_confirmed = True
             job.touch()
             return {"confirmed": "spec", "phase": self.phase()}
@@ -428,9 +532,10 @@ class DesignAgentSession:
         """Physics-based feasibility of the current spec on the current motor."""
         from saas.service import effective_motor_params
 
-        spec = self._require_spec()
+        # Keep Operating Point voltage in sync with the plant before analyzing.
+        spec = self._store_reconciled_spec(self._require_spec())
         params = effective_motor_params(self.job)
-        report = check_feasibility(params, spec)
+        report = check_feasibility(params, spec, V_max=self._plant_v_max())
         self.job.feasibility = report.to_dict()
         return self.job.feasibility
 
@@ -677,17 +782,39 @@ class DesignAgentSession:
         """Apply a requested change to the spec (relax settling, add a test, …)."""
         from saas.feedback import apply_user_feedback
 
-        spec = self._require_spec()
+        plant_redirect = _plant_change_redirect(change)
+        if plant_redirect is not None:
+            return plant_redirect
+
+        try:
+            spec = self._require_spec()
+        except RuntimeError as exc:
+            return {"error": str(exc)}
         summary = None if self.job.scorecard is None else self.job.scorecard.get("summary")
+        before = spec.to_dict()
         updated, plan = apply_user_feedback(spec, change, use_llm=False, scorecard_summary=summary)
-        self.job._spec = updated
-        self.job.spec_dict = updated.to_dict()
+        # Persist through the reconciler so plant voltage / RPM stay aligned.
+        updated = self._store_reconciled_spec(updated)
+        # A changed spec must be re-agreed before any (re)design can run. This is the
+        # gate that stops the app from silently jumping back into the Design phase.
+        self.job.confirmed = False
+        self.job.spec_confirmed = False
         self.job.touch()
+        self._emit_workspace()
         return {
             "action": plan.get("action"),
             "reason": plan.get("reason"),
             "spec": updated.to_dict(),
-            "note": "Spec updated. Call design_controller again to redesign under the new spec.",
+            "changes": plan.get("changes", []),
+            "adjustments": _spec_adjustments(before, updated.to_dict()),
+            "provenance": dict(updated.provenance),
+            "disclosures": build_disclosures(updated),
+            "sanity_advisories": spec_sanity_advisories(updated),
+            "note": (
+                "Spec updated. Report the new values plus any adjustments/disclosures/"
+                "advisories to the engineer and get their approval: call confirm(stage='spec'), "
+                "then ask which controller family they want before design_controller."
+            ),
         }
 
     def export(self) -> dict[str, Any]:
@@ -840,6 +967,58 @@ class DesignAgentSession:
         self._emit_workspace()
         return result
 
+    def _gated_design_controller(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Hard phase gate for the LLM-driven design step.
+
+        The chat model can only reach a real design run after the motor AND the
+        spec are explicitly confirmed and a controller family has been explicitly
+        chosen. This makes the workflow deterministic regardless of model quality:
+        a weak model cannot skip straight to Design or silently default to 'auto'.
+        """
+        job = self.job
+        if not getattr(job, "motor_confirmed", False):
+            return {
+                "error": "MOTOR_NOT_CONFIRMED",
+                "message": "The motor is not confirmed yet. Present the plant and call "
+                "confirm(stage='motor') after the engineer approves, before designing.",
+                "phase": self.phase(),
+            }
+        if self.job._spec is None and self.job.spec_dict is None:
+            return {
+                "error": "NO_SPEC",
+                "message": "No performance spec yet. Call set_spec, review feasibility, "
+                "then confirm(stage='spec').",
+                "phase": self.phase(),
+            }
+        if not getattr(job, "spec_confirmed", False):
+            return {
+                "error": "SPEC_NOT_CONFIRMED",
+                "message": "The requirements are not confirmed. Show the engineer the "
+                "current spec (including any adjustments) and call confirm(stage='spec') "
+                "once they approve — do not design against an unconfirmed spec.",
+                "phase": self.phase(),
+            }
+        controller_type = args.get("controller_type")
+        if controller_type is None or str(controller_type).strip() == "":
+            return {
+                "error": "CONTROLLER_TYPE_REQUIRED",
+                "message": "Ask the engineer which controller family they want and pass it "
+                "explicitly. Never default to a family on their behalf.",
+                "choices": list(CONTROLLER_TYPES),
+                "phase": self.phase(),
+            }
+        if str(controller_type).lower().strip() not in CONTROLLER_TYPES:
+            return {
+                "error": "UNKNOWN_CONTROLLER_TYPE",
+                "message": f"Unknown controller_type {controller_type!r}.",
+                "choices": list(CONTROLLER_TYPES),
+            }
+        return self.design_controller(
+            controller_type=str(controller_type),
+            mode=args.get("mode", "heuristic"),
+            max_iterations=args.get("max_iterations"),
+        )
+
     def _call_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         if name == "define_plant":
             return self.define_plant(
@@ -859,11 +1038,7 @@ class DesignAgentSession:
         if name == "confirm":
             return self.confirm(args.get("stage", ""))
         if name == "design_controller":
-            return self.design_controller(
-                controller_type=args.get("controller_type", "auto"),
-                mode=args.get("mode", "heuristic"),
-                max_iterations=args.get("max_iterations"),
-            )
+            return self._gated_design_controller(args)
         if name == "simulate":
             return self.simulate()
         if name == "query_results":
@@ -885,6 +1060,54 @@ def _unit_suffix(unit: str) -> str:
     return unit if unit == "%" else f" {unit}"
 
 
+_PLANT_CHANGE_MARKERS: tuple[str, ...] = (
+    "v_max",
+    "vmax",
+    "v max",
+    "max voltage",
+    "supply voltage",
+    "bus voltage",
+    "double the voltage",
+    "double voltage",
+    "change the voltage",
+    "change voltage",
+    "update the motor",
+    "change the motor",
+    "redefine the motor",
+    "motor parameter",
+    "motor params",
+    "plant parameter",
+    "plant params",
+    "viscous friction",
+    "rotor inertia",
+    "armature resistance",
+    "armature inductance",
+)
+
+
+def _plant_change_redirect(change: str) -> dict[str, Any] | None:
+    """If feedback is about the plant, steer the LLM to define_plant (not modify)."""
+    t = (change or "").lower().strip()
+    if not t:
+        return None
+    looks_plant = any(m in t for m in _PLANT_CHANGE_MARKERS)
+    looks_plant = looks_plant or bool(
+        re.search(r"\b([jbkr]|l)\s*=\s*[-+]?\d", t)
+        or re.search(r"\b(j|b|k|r|l)\b.{0,12}\b(to|=)\b", t)
+    )
+    if not looks_plant:
+        return None
+    return {
+        "error": (
+            "That request changes the motor/plant (e.g. J, b, K, R, L, or V_max). "
+            "Do NOT use modify for plant edits. Call define_plant again with the "
+            "updated values — partial updates are allowed when a motor already exists "
+            "(e.g. only V_max). No performance spec is required to revise the motor."
+        ),
+        "use_tool": "define_plant",
+    }
+
+
 # --------------------------------------------------------------------------- #
 # OpenAI tool schemas + system prompt
 # --------------------------------------------------------------------------- #
@@ -898,30 +1121,69 @@ def _system_prompt() -> str:
         "one sentence and steer them back to motor/controller design. Do not answer it.\n\n"
         "You hold ONE always-on conversation with an engineer and drive a deterministic "
         "engine through tools. Absolute rules:\n"
-        "- Tools COMPUTE every number. You NEVER invent gains, metrics, feasibility, or "
-        "pass/fail. Physics and certification are code-enforced; you may explain, never override.\n"
+        "- Tools COMPUTE every number. You NEVER fabricate gains, metrics, feasibility, or "
+        "pass/fail. Every RESULT number you state MUST come from a tool result this session.\n"
+        "- You MAY interpret and, when asked, propose values — but you must be transparent "
+        "about their SOURCE. set_spec/modify return a 'provenance' map plus 'disclosures', "
+        "'adjustments'/'warnings', and 'sanity_advisories'. After EVERY set_spec/modify you "
+        "MUST relay, in plain language:\n"
+        "   (1) DISCLOSURES — any value you or the engine supplied that the engineer did not "
+        "state (assumed / default / derived / clamped). Say it was assumed and ask them to "
+        "confirm or change it. Never present an assumed value as if they specified it.\n"
+        "   (2) MISSING inputs — if a needed value (e.g. target speed) is absent, ask for it.\n"
+        "   (3) SANITY ADVISORIES + feasibility issues — when a number is unrealistic or "
+        "conflicting, explain WHY (use the tool's message) and offer the suggested realistic "
+        "range. Do not silently accept it.\n"
+        "- DELEGATION: if the engineer asks you to choose a value ('you pick', 'whatever is "
+        "suitable'), propose one WITH a brief reason, mark that you chose it, and get their "
+        "explicit approval (they must confirm) before it is locked. Never lock in a value "
+        "you selected without approval.\n"
+        "- When you call set_spec, pass the engineer's OWN wording (do not substitute numbers "
+        "you invented into the text) so the source of each value stays accurate.\n"
         "- For ANY question about results (\"what was the settling time?\") you MUST call "
         "query_results and quote only the numbers it returns.\n\n"
-        "WORKFLOW (walk the engineer through it, one stage at a time):\n"
-        "1. MOTOR: When the engineer describes a motor, call define_plant. Then write ONE "
-        "reply that (a) lists the proposed params (J, b, K, R, L, V_max), (b) cites the "
-        "tool's derived characteristics (τ_mech, τ_elec, ω_max), and (c) notes any "
-        "warnings. Ask them to approve or say what to change. Do NOT ask for performance "
-        "goals yet. If numbers look non-physical, push back. When they clearly approve, "
-        "call confirm(stage='motor') to lock it in.\n"
+        "WORKFLOW (guide the engineer stage-by-stage, but stages are REVISABLE — never treat "
+        "the flow as one-way):\n"
+        "1. MOTOR: When the engineer describes a motor OR asks to change motor params / "
+        "V_max at ANY time (before or after confirmation, even mid-design), call "
+        "define_plant. Partial updates are OK once a motor exists (e.g. only V_max=36). "
+        "Then write ONE reply that (a) lists the proposed params (J, b, K, R, L, V_max), "
+        "(b) cites the tool's derived characteristics (τ_mech, τ_elec, ω_max), and (c) notes "
+        "any warnings. Ask them to approve or say what to change. Do NOT ask for performance "
+        "goals yet unless the motor is already confirmed and they are ready. If numbers look "
+        "non-physical, push back. When they clearly approve, call confirm(stage='motor'). "
+        "NEVER use modify for plant/V_max changes — modify is for performance requirements "
+        "only. Redefining the motor clears confirmations and stale design results; that is "
+        "expected — present the new plant and continue.\n"
         "2. SPEC: Only after the motor is confirmed, ask for performance goals; call "
-        "set_spec, then check_feasibility. If the spec is infeasible or tight, explain "
-        "plainly and negotiate until it is achievable. When the engineer agrees, call "
-        "confirm(stage='spec').\n"
-        "3. CONTROLLER: Only after the spec is confirmed, ask which controller family they "
-        f"want ({list(CONTROLLER_TYPES)}) or offer 'auto'. Ask any needed clarifying "
-        "questions, then call design_controller.\n"
+        "set_spec, then check_feasibility. set_spec inherits the plant's V_max into the "
+        "Operating Point and converts RPM→rad/s automatically. Report the resulting spec, "
+        "then explicitly walk through the tool's 'disclosures' (assumed/derived/default/"
+        "clamped values), 'sanity_advisories', and any feasibility issues — with the reasons "
+        "and suggested realistic ranges. Get the engineer to confirm or change every assumed "
+        "value. If the spec is infeasible or tight, negotiate until achievable. Only when the "
+        "engineer approves the FULL spec (including anything you assumed) call confirm(stage='spec').\n"
+        "3. CONTROLLER: Only after the spec is confirmed, ASK which controller family they "
+        f"want ({list(CONTROLLER_TYPES)}) — 'auto' runs the adaptive orchestrator. Wait for "
+        "their explicit choice, ask any needed clarifying questions, then call "
+        "design_controller with that exact controller_type. NEVER choose a family yourself "
+        "or default to 'auto' without them saying so.\n"
         "4. RESULTS: Report the outcome grounded in query_results. Offer to modify/redesign. "
-        "Apply changes via modify + design_controller; the session remembers everything.\n"
+        "After ANY modify (spec), the spec becomes UNCONFIRMED again: report the changes, get "
+        "the engineer's approval, call confirm(stage='spec'), re-ask the controller family, "
+        "THEN design_controller. Do not chain modify straight into design. If they change "
+        "the motor instead, go back to step 1 via define_plant.\n"
         "5. EXPORT: When the engineer is satisfied, call export (a certification package, "
         "gated by simulation results).\n\n"
         "Only ask a clarifying question when genuinely blocked. Keep replies short and "
-        "engineer-friendly."
+        "engineer-friendly.\n\n"
+        "FORMATTING (chat UI renders Markdown + KaTeX):\n"
+        "- Prefer concise **bold** labels and short `-` bullet lists for parameters and "
+        "results. Do not write long prose paragraphs.\n"
+        "- Put math in KaTeX: inline `$J = 0.001$`, `$\\tau_{\\mathrm{mech}}$`, "
+        "`$\\omega_{\\max}$`; display `$$...$$` only when a formula needs its own line.\n"
+        "- Units may stay in plain text after the math (e.g. `$J = 0.001$ kg·m²).\n"
+        "- Never wrap the whole reply in a code fence."
     )
 
 
@@ -931,9 +1193,12 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "define_plant",
             "description": (
-                "Define the DC motor to control. Provide either a natural-language "
-                "'description' OR all five numeric parameters J, b, K, R, L (SI units) "
-                "plus optional V_max and name."
+                "Define or REVISE the DC motor at any time (before or after confirmation). "
+                "Provide a natural-language 'description', OR all five of J, b, K, R, L "
+                "(SI units) plus optional V_max/name, OR — when a motor already exists — "
+                "any subset of those fields to update (e.g. only V_max). Never refuse a "
+                "motor/V_max change because a performance spec is missing; use this tool "
+                "instead of modify for plant edits."
             ),
             "parameters": {
                 "type": "object",
@@ -993,13 +1258,20 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "design_controller",
             "description": (
-                "Design and score a controller of the chosen type. 'auto' runs the adaptive "
-                "orchestrator (may switch topology); pid/robust/mpc/adaptive design that family."
+                "Design and score a controller. BLOCKED until the motor and spec are both "
+                "confirmed and the engineer has explicitly chosen a controller family. "
+                "'auto' runs the adaptive orchestrator (may switch topology); "
+                "pid/robust/lqr/lqg/mpc/mrac/fuzzy design that family. Never call this with "
+                "a family the engineer did not choose."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "controller_type": {"type": "string", "enum": list(CONTROLLER_TYPES)},
+                    "controller_type": {
+                        "type": "string",
+                        "enum": list(CONTROLLER_TYPES),
+                        "description": "The family the engineer explicitly chose. Required.",
+                    },
                     "mode": {
                         "type": "string",
                         "enum": ["script", "heuristic", "llm"],
@@ -1007,6 +1279,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     },
                     "max_iterations": {"type": "integer", "minimum": 1, "maximum": 20},
                 },
+                "required": ["controller_type"],
             },
         },
     },
@@ -1037,7 +1310,12 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "modify",
-            "description": "Apply a requested change to the spec (e.g. 'relax settling to 2.5 s', 'add a load disturbance').",
+            "description": (
+                "Apply a requested change to the PERFORMANCE SPEC only "
+                "(e.g. 'relax settling to 2.5 s', 'add a load disturbance'). "
+                "Do NOT use this for motor/plant edits (J, b, K, R, L, V_max) — "
+                "call define_plant for those."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"change": {"type": "string"}},

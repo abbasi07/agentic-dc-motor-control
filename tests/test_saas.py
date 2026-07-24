@@ -48,7 +48,15 @@ def test_heuristic_feedback_plans():
 
 def test_apply_feedback_relaxes_spec():
     spec = _spec_with_warn()
+    # An explicit number is now applied exactly via the deterministic edit path.
     updated, plan = apply_user_feedback(spec, "relax settling to 2.5s", use_llm=False)
+    assert plan["action"] == "edit_spec"
+    assert updated.hard_constraints["settling_time_s"][1] == 2.5
+
+
+def test_apply_feedback_relax_without_number():
+    spec = _spec_with_warn()
+    updated, plan = apply_user_feedback(spec, "settling is too tight, relax it", use_llm=False)
     assert plan["action"] == "relax_settling"
     assert updated.hard_constraints["settling_time_s"][1] >= 2.5
 

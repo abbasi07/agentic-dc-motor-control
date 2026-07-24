@@ -392,7 +392,8 @@ NEXT (optional productization):
 Do NOT commit .env.
 Run examples / Copilot from project root so `import dc_motor` / `import agents` work.
 Examples:  uv run python examples/lab_01_plant_pid.py
-Copilot:   uv run streamlit run saas/ui_streamlit.py
+Copilot:   docker compose up   # web http://localhost:3000 + API :8000
+           # or host: cd web && npm run dev  (against a running API)
            uv run uvicorn saas.api:app --port 8000   # /docs = Swagger only
 Tests:     uv sync --group dev && uv run pytest -q
 

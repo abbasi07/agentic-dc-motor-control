@@ -18,7 +18,7 @@ from dc_motor.evaluate import evaluate_controller, scorecard_to_json
 from dc_motor.failure import FailureDigest, TAG_TO_ACTION_HINTS
 from dc_motor.plant import CTMS_PARAMS, MotorParams
 from dc_motor.scenarios import scenarios_from_spec
-from dc_motor.specs import DesignSpec, validate_and_clamp_design_spec
+from dc_motor.specs import DesignSpec, suggest_t_final, validate_and_clamp_design_spec
 
 from .controller_registry import SPECIALIST_ACTIONS, registry_metadata
 from .critic import diagnose
@@ -197,20 +197,12 @@ def expand_scenarios(spec: DesignSpec, *, add: list[str] | None = None) -> Desig
             scenarios.append(name)
     if "step_1rads" not in scenarios:
         scenarios.insert(0, "step_1rads")
-    updated = DesignSpec(
-        raw_spec=spec.raw_spec,
-        hard_constraints=dict(spec.hard_constraints),
-        soft_preferences=dict(spec.soft_preferences),
+    from dataclasses import replace
+
+    updated = replace(
+        spec,
         required_scenarios=scenarios,
-        omega_ref=spec.omega_ref,
-        V_min=spec.V_min,
-        V_max=spec.V_max,
-        t_final=spec.t_final,
-        max_design_iterations=spec.max_design_iterations,
-        stop_on_pass=spec.stop_on_pass,
-        source=spec.source,
         notes=(spec.notes + " | expand_scenarios").strip(" |"),
-        warnings=list(spec.warnings),
     )
     return validate_and_clamp_design_spec(updated)
 
@@ -223,21 +215,22 @@ def relax_settling_for_load(spec: DesignSpec, *, new_limit: float = 2.5) -> Desi
         if op not in {"<=", "<"}:
             op = "<="
     hard["settling_time_s"] = (op, float(new_limit))
-    updated = DesignSpec(
-        raw_spec=spec.raw_spec,
+    # Derive the horizon from the (new) settling target instead of a fixed floor so
+    # a large settling time (slow motors) gets a proportionally long horizon.
+    new_t_final = suggest_t_final(settling=float(new_limit), current=spec.t_final)
+    from dataclasses import replace
+
+    provenance = dict(spec.provenance)
+    provenance["settling_time_s"] = "user"  # an explicit relax is a user decision
+    provenance["t_final"] = "derived"
+    updated = replace(
+        spec,
         hard_constraints=hard,
-        soft_preferences=dict(spec.soft_preferences),
-        required_scenarios=list(spec.required_scenarios),
-        omega_ref=spec.omega_ref,
-        V_min=spec.V_min,
-        V_max=spec.V_max,
-        t_final=max(spec.t_final, 4.0),
-        max_design_iterations=spec.max_design_iterations,
-        stop_on_pass=spec.stop_on_pass,
-        source=spec.source,
+        t_final=new_t_final,
         notes=(spec.notes + f" | relax_settling_for_load->{new_limit}").strip(" |"),
         warnings=list(spec.warnings)
         + [f"Relaxed settling_time_s to {op} {new_limit} for load feasibility."],
+        provenance=provenance,
     )
     return validate_and_clamp_design_spec(updated)
 

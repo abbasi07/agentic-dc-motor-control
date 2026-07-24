@@ -129,8 +129,42 @@ def test_check_feasibility_flags_unreachable_target():
 def test_modify_relaxes_settling():
     session = _designed_session()
     out = session.modify("relax settling to 2.5 s")
+    # An explicit numeric target is now applied deterministically (exact value),
+    # rather than routed through the fuzzy relax path.
+    assert out["action"] == "edit_spec"
+    assert session.job._spec.hard_constraints["settling_time_s"][1] == 2.5
+    # A modify must invalidate the confirmation so design cannot silently re-run.
+    assert session.job.spec_confirmed is False
+
+
+def test_modify_without_number_uses_relax_path():
+    session = _designed_session()
+    out = session.modify("settling is too tight, please relax it")
     assert out["action"] == "relax_settling"
     assert session.job._spec.hard_constraints["settling_time_s"][1] >= 2.5
+
+
+def test_design_gate_blocks_llm_until_confirmed_and_chosen():
+    """The LLM dispatch path must not reach a design run until every gate passes."""
+    session = DesignAgentSession.create(plant_id="dc_motor_ctms", mode="heuristic")
+    session.load_spec(_easy_step_spec())
+
+    # Not confirmed yet -> blocked.
+    blocked = session._gated_design_controller({"controller_type": "pid"})
+    assert "error" in blocked
+
+    session.job.motor_confirmed = True
+    session.job.spec_confirmed = True
+
+    # Confirmed, but no explicit family -> must ask, never default to auto.
+    needs_choice = session._gated_design_controller({})
+    assert needs_choice["error"] == "CONTROLLER_TYPE_REQUIRED"
+    assert session.job.scorecard is None
+
+    # Explicit family -> runs.
+    ok = session._gated_design_controller({"controller_type": "pid"})
+    assert ok.get("controller_type") == "pid"
+    assert session.job.scorecard is not None
 
 
 def test_export_gate_allows_certified_design(tmp_path):
@@ -184,6 +218,61 @@ def test_confirm_without_artifact_errors():
     assert "error" in session.confirm("bogus")
 
 
+def test_load_spec_inherits_plant_v_max_and_rpm_from_text():
+    """Operating Point must mirror the locked plant + NL target, not schema defaults."""
+    from dc_motor.specs import rpm_to_rad_s
+
+    session = DesignAgentSession.create(plant_id="dc_motor_ctms")
+    session.define_plant(
+        J=0.01, b=1e-4, K=0.1, R=30.0, L=0.001, V_max=20.0, name="12V DC motor"
+    )
+    session.confirm("motor")
+
+    # Simulate a Spec LLM result that kept ±12 V and omega_ref=1 despite the user's RPM.
+    draft = DesignSpec(
+        raw_spec="target speed 2800 RPM, max overshoot 30%, ss error tol 5%, settling time 1 sec",
+        hard_constraints={
+            "settling_time_s": ("<=", 1.0),
+            "overshoot_pct": ("<=", 30.0),
+            "steady_state_error": ("<=", 0.05),
+        },
+        required_scenarios=["step_1rads"],
+        omega_ref=1.0,
+        V_min=-12.0,
+        V_max=12.0,
+        source="llm",
+    )
+    session.load_spec(draft)
+    spec = session.job._spec
+    assert math.isclose(spec.V_max, 20.0)
+    assert math.isclose(spec.V_min, -20.0)
+    assert math.isclose(spec.omega_ref, rpm_to_rad_s(2800.0), rel_tol=1e-6)
+
+    feas = session.check_feasibility()
+    # Feasibility characteristics must use the 20 V plant budget (~153.8 rad/s), not 12 V.
+    assert abs(feas["characteristics"]["omega_max_rad_s"] - 153.846) < 0.05
+    # 2800 RPM (~293 rad/s) exceeds ω_max ≈ 154 → physically unreachable.
+    assert feas["feasible"] is False
+
+
+def test_redefining_motor_updates_existing_spec_voltage():
+    session = DesignAgentSession.create(plant_id="dc_motor_ctms")
+    session.define_plant(J=0.01, b=0.1, K=0.01, R=1.0, L=0.5, V_max=12.0, name="m")
+    session.load_spec(_easy_step_spec())
+    assert math.isclose(session.job._spec.V_max, 12.0)
+
+    session.define_plant(J=0.01, b=0.1, K=0.01, R=1.0, L=0.5, V_max=24.0, name="m24")
+    assert math.isclose(session.job._spec.V_max, 24.0)
+    assert math.isclose(session.job._spec.V_min, -24.0)
+    assert session.job.motor_confirmed is False
+    assert session.job.spec_confirmed is False
+
+    # Partial V_max-only update also reconciles the draft spec.
+    session.define_plant(V_max=36.0)
+    assert math.isclose(session.job._spec.V_max, 36.0)
+    assert math.isclose(session.job._spec.V_min, -36.0)
+
+
 def test_redefining_motor_resets_confirmation():
     session = DesignAgentSession.create(plant_id="dc_motor_ctms")
     session.define_plant(J=0.01, b=0.1, K=0.01, R=1.0, L=0.5, name="m")
@@ -192,6 +281,37 @@ def test_redefining_motor_resets_confirmation():
     session.define_plant(J=0.02, b=0.1, K=0.01, R=1.0, L=0.5, name="m2")
     assert session.job.motor_confirmed is False
 
+
+def test_partial_plant_update_vmax_without_spec():
+    """Voltage/motor edits must work before any performance spec exists."""
+    session = DesignAgentSession.create(plant_id="dc_motor_ctms")
+    session.define_plant(J=0.001, b=1e-4, K=0.2, R=5.0, L=0.001, V_max=18.0, name="m")
+    out = session.define_plant(V_max=36.0)
+    assert "error" not in out
+    assert math.isclose(float(out["V_max"]), 36.0)
+    assert math.isclose(float(out["params"]["J"]), 0.001)
+    assert session.job.motor_confirmed is False
+    # Doubling V_max roughly doubles ω_max for this plant.
+    assert float(out["characteristics"]["omega_max_rad_s"]) > 150.0
+
+
+def test_modify_redirects_plant_voltage_change_without_spec():
+    session = DesignAgentSession.create(plant_id="dc_motor_ctms")
+    session.define_plant(J=0.001, b=1e-4, K=0.2, R=5.0, L=0.001, V_max=18.0, name="m")
+    out = session.modify("Change the voltage and double it")
+    assert out.get("use_tool") == "define_plant"
+    assert "define_plant" in out["error"]
+
+
+def test_redefining_motor_clears_stale_design_results():
+    session = _designed_session()
+    assert session.job.scorecard is not None
+    session.define_plant(J=0.01, b=0.1, K=0.01, R=1.0, L=0.5, V_max=24.0, name="m24")
+    assert session.job.scorecard is None
+    assert session.job.certification is None
+    assert session.job.motor_confirmed is False
+    assert session.job.spec_confirmed is False
+    assert session.phase() == "motor_negotiation"
 
 def test_workspace_reflects_designed_session():
     from agents.workflow import PHASE_RESULTS_REVIEW

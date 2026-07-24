@@ -63,3 +63,9 @@ body {
 .animate-fade-up {
   animation: fade-up 0.35s ease-out both;
 }
+
+/* KaTeX defaults to near-black; inherit bubble text color in dark chat. */
+.chat-md .katex,
+.chat-md .katex-display {
+  color: inherit;
+}

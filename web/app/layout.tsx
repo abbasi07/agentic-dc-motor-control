@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { JetBrains_Mono, Outfit } from "next/font/google";
 
+import "katex/dist/katex.min.css";
 import "./globals.css";
 
 const sans = Outfit({

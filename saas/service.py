@@ -14,7 +14,7 @@ from dc_motor.feasibility import check_feasibility
 from dc_motor.motor_model import MotorModel
 from dc_motor.plant import MotorParams
 from dc_motor.registry import DEFAULT_PLANT_ID, get_plant_spec, list_plants, motor_params_for
-from dc_motor.specs import DesignSpec, design_spec_from_dict
+from dc_motor.specs import DesignSpec, design_spec_from_dict, reconcile_spec_with_plant
 
 from .clarify import critique_design_spec
 from .events import (
@@ -103,6 +103,22 @@ def _capped_iterations(iters: int) -> int:
 # --------------------------------------------------------------------------- #
 # Custom DC motor (chat-defined plant)
 # --------------------------------------------------------------------------- #
+def _invalidate_design_artifacts(job: DesignJob) -> None:
+    """Drop controller results after a plant (or equivalent) change.
+
+    Downstream scores/certificates were computed for the previous motor; keeping
+    them would leave the workspace in ``results_review`` with stale numbers.
+    """
+    job.confirmed = False
+    job._session = None
+    job.session_dict = None
+    job.scorecard = None
+    job.certification = None
+    job.export_path = None
+    if job.status in {"queued", "running", "completed", "failed", "exported"}:
+        job.status = "draft"
+
+
 def _record_motor(
     job: DesignJob,
     motor: MotorModel,
@@ -116,9 +132,23 @@ def _record_motor(
     # prior spec agreement is invalidated because feasibility depends on the motor.
     job.motor_confirmed = False
     job.spec_confirmed = False
+    _invalidate_design_artifacts(job)
+    # Keep an existing DesignSpec Operating Point voltage aligned with the plant.
+    if job._spec is not None or job.spec_dict is not None:
+        if job._spec is None and job.spec_dict is not None:
+            job._spec = design_spec_from_dict(
+                job.spec_dict, raw_spec=job.nl_spec or "", source="manual"
+            )
+        if job._spec is not None:
+            job._spec = reconcile_spec_with_plant(job._spec, plant_V_max=motor.V_max)
+            job.spec_dict = job._spec.to_dict()
+            try:
+                _feasibility_for_job(job, job._spec)
+            except Exception:  # noqa: BLE001 - feasibility is best-effort on redefine
+                pass
     if append_chat:
-        # Used by the step-based API / Streamlit path. The chat-first Design Agent
-        # skips this — it phrases a single confirmation reply after define_plant.
+        # Used by non-agent API callers. The chat-first Design Agent skips this —
+        # it phrases a single confirmation reply after define_plant.
         if motor.warnings:
             warn_md = "\n".join(f"- {w}" for w in motor.warnings)
             note = f"\n\nHeads-up on the numbers you gave:\n{warn_md}"
@@ -183,9 +213,17 @@ def effective_motor_params(job: DesignJob) -> MotorParams:
     return motor_params_for(job.plant_id)
 
 
+def _plant_v_max_for_job(job: DesignJob) -> float | None:
+    if job._motor is not None:
+        return float(job._motor.V_max)
+    if job.motor_dict and job.motor_dict.get("V_max") is not None:
+        return float(job.motor_dict["V_max"])
+    return None
+
+
 def _feasibility_for_job(job: DesignJob, spec: DesignSpec) -> dict[str, Any]:
     params = effective_motor_params(job)
-    report = check_feasibility(params, spec)
+    report = check_feasibility(params, spec, V_max=_plant_v_max_for_job(job))
     job.feasibility = report.to_dict()
     return job.feasibility
 
@@ -201,7 +239,7 @@ def interpret_job_spec(
     if append_user:
         job.chat.append({"role": "user", "content": job.nl_spec})
     try:
-        spec = interpret_spec(job.nl_spec)
+        spec = interpret_spec(job.nl_spec, plant_V_max=_plant_v_max_for_job(job))
     except RuntimeError as exc:
         job.status = "failed"
         job.error = str(exc)
@@ -209,6 +247,8 @@ def interpret_job_spec(
         _save(job)
         raise
 
+    # Align Operating Point with plant V_max and convert any RPM target in the text.
+    spec = reconcile_spec_with_plant(spec, plant_V_max=_plant_v_max_for_job(job))
     job._spec = spec
     job.spec_dict = spec.to_dict()
     job.confirmed = False

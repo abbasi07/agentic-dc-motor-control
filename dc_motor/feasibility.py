@@ -230,13 +230,23 @@ def analyze_feasibility(
     )
 
 
-def check_feasibility(params: MotorParams, spec) -> FeasibilityReport:
-    """Feasibility of a ``DesignSpec`` against a motor (convenience wrapper)."""
+def check_feasibility(
+    params: MotorParams,
+    spec,
+    *,
+    V_max: float | None = None,
+) -> FeasibilityReport:
+    """Feasibility of a ``DesignSpec`` against a motor (convenience wrapper).
+
+    Prefer an explicit plant ``V_max`` when provided so characteristics / reachability
+    use the motor actuator budget rather than a stale Operating Point default (±12 V).
+    """
     hard = getattr(spec, "hard_constraints", {}) or {}
+    v_budget = float(V_max) if V_max is not None else float(getattr(spec, "V_max", 12.0))
     return analyze_feasibility(
         params,
         omega_ref=float(getattr(spec, "omega_ref", 1.0)),
-        V_max=float(getattr(spec, "V_max", 12.0)),
+        V_max=v_budget,
         settling_limit=_constraint_limit(hard, "settling_time_s"),
         rise_limit=_constraint_limit(hard, "rise_time_s"),
         overshoot_limit=_constraint_limit(hard, "overshoot_pct"),

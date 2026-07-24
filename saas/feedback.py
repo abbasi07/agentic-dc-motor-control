@@ -11,13 +11,20 @@ from dotenv import load_dotenv
 
 from agents.orchestrator import AVAILABLE_ACTIONS, expand_scenarios, relax_settling_for_load
 from agents.spec_agent import DEFAULT_MODEL, _require_api_key
-from dc_motor.specs import DesignSpec, validate_and_clamp_design_spec
+from dc_motor.specs import (
+    DesignSpec,
+    apply_spec_edits,
+    extract_constraints_from_text,
+    extract_t_final_from_text,
+    validate_and_clamp_design_spec,
+)
 
 load_dotenv()
 
 FeedbackAction = Literal[
     "accept",
     "rerun",
+    "edit_spec",
     "relax_settling",
     "expand_scenarios",
     "add_disturbance",
@@ -34,6 +41,29 @@ FeedbackAction = Literal[
 ]
 
 
+def parse_spec_edits(text: str) -> dict[str, float]:
+    """Deterministically extract explicit numeric spec edits from feedback text.
+
+    Returns only fields the user actually wrote (settling/overshoot/ss-error/rise
+    limits and/or an explicit simulation horizon). Empty when nothing numeric is
+    stated, so callers can fall back to the keyword-based plan.
+    """
+    edits: dict[str, float] = {}
+    for metric, (_op, limit) in extract_constraints_from_text(text).items():
+        if metric == "settling_time_s":
+            edits["settling"] = limit
+        elif metric == "overshoot_pct":
+            edits["overshoot"] = limit
+        elif metric == "steady_state_error":
+            edits["steady_state_error"] = limit
+        elif metric == "rise_time_s":
+            edits["rise_time"] = limit
+    horizon = extract_t_final_from_text(text)
+    if horizon is not None:
+        edits["t_final"] = horizon
+    return edits
+
+
 def heuristic_feedback_plan(text: str) -> dict[str, Any]:
     """Deterministic mapping from feedback phrases to a plan."""
     t = text.lower().strip()
@@ -42,6 +72,17 @@ def heuristic_feedback_plan(text: str) -> dict[str, Any]:
 
     if any(w in t for w in ("accept", "looks good", "approve", "satisfied", "ship it", "done")):
         return {"action": "accept", "reason": "User accepted the design.", "params": {}}
+
+    # Explicit numeric edits (settling / overshoot / ss-error / rise / horizon) are
+    # handled deterministically BEFORE fuzzy keyword matching so stated values are
+    # applied exactly instead of being floored to a hardcoded default.
+    edits = parse_spec_edits(text)
+    if edits:
+        return {
+            "action": "edit_spec",
+            "reason": "Applied the exact numeric spec edits stated in the request.",
+            "params": edits,
+        }
 
     if any(w in t for w in ("relax", "too tight", "infeasible", "settling too fast", "can't settle")):
         m = re.search(r"([\d.]+)\s*s", t)
@@ -163,7 +204,18 @@ def apply_user_feedback(
     updated = spec
     action = plan["action"]
 
-    if action == "relax_settling":
+    if action == "edit_spec":
+        params = plan.get("params", {}) or {}
+        updated, changes = apply_spec_edits(
+            spec,
+            settling=params.get("settling"),
+            overshoot=params.get("overshoot"),
+            steady_state_error=params.get("steady_state_error"),
+            rise_time=params.get("rise_time"),
+            t_final=params.get("t_final"),
+        )
+        plan["changes"] = changes
+    elif action == "relax_settling":
         lim = float(plan.get("params", {}).get("new_limit", 2.5))
         updated = relax_settling_for_load(spec, new_limit=lim)
     elif action == "expand_scenarios":

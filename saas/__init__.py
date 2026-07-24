@@ -1,4 +1,4 @@
-"""SaaS / local Design Copilot — job store, clarify, feedback, API, UI."""
+"""SaaS / local Design Copilot — job store, clarify, feedback, API."""
 
 from .clarify import critique_design_spec
 from .feedback import apply_user_feedback

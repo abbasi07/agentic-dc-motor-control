@@ -13,6 +13,10 @@ the frontend can render the right panels and the backend can gate transitions.
         -> results_review         (a scorecard exists; iterate or accept)
         -> exported               (certification package written)
 
+Stages are revisable, not one-way: redefining the motor (or invalidating confirmations)
+moves the phase backward as job state changes. Design is still gated until motor +
+spec are confirmed.
+
 The **workspace** is a reflect-only projection of the session: it contains exactly the
 artifacts that currently exist (so the UI can show panels *as they become relevant*).
 Every number in it originates from a deterministic tool — never from the LLM. Chat is
@@ -74,14 +78,16 @@ def compute_phase(job: Any) -> str:
         return PHASE_RESULTS_REVIEW
     if getattr(job, "status", None) in {"queued", "running"}:
         return PHASE_DESIGNING
+    # Motor confirmation is a hard gate: if a plant exists but is not agreed, stay
+    # in motor negotiation even when a draft spec (or prior results) still linger.
+    if _motor_present(job) and not getattr(job, "motor_confirmed", False):
+        return PHASE_MOTOR_NEGOTIATION
     if _spec_present(job):
         if getattr(job, "spec_confirmed", False):
             return PHASE_CONTROLLER_SELECTION
         return PHASE_SPEC_NEGOTIATION
     if _motor_present(job):
-        if getattr(job, "motor_confirmed", False):
-            return PHASE_MOTOR_AGREED
-        return PHASE_MOTOR_NEGOTIATION
+        return PHASE_MOTOR_AGREED
     return PHASE_GREETING
 
 

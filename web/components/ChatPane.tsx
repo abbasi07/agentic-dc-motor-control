@@ -6,6 +6,7 @@ import type { ConnectionState } from "@/lib/sse";
 import type { ActivityItem, ChatMessage } from "@/lib/types";
 import { copyText } from "@/lib/clipboard";
 
+import { MarkdownMessage } from "./MarkdownMessage";
 import { SessionHistory } from "./SessionHistory";
 
 export function ChatPane({
@@ -336,13 +337,13 @@ function MessageBubble({ message }: { message: ChatMessage }) {
       <div className={`flex max-w-[85%] flex-col ${isUser ? "items-end" : "items-start"}`}>
         <div
           className={[
-            "whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed",
+            "rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed",
             isUser
-              ? "rounded-br-md bg-accent text-ink-950"
+              ? "whitespace-pre-wrap rounded-br-md bg-accent text-ink-950"
               : "rounded-bl-md border border-ink-700/80 bg-ink-850 text-cloud/90",
           ].join(" ")}
         >
-          {message.content}
+          {isUser ? message.content : <MarkdownMessage content={message.content ?? ""} />}
         </div>
         <button
           type="button"

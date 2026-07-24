@@ -48,6 +48,20 @@ def test_phase_progression():
     assert compute_phase(job) == PHASE_EXPORTED
 
 
+def test_phase_returns_to_motor_negotiation_when_motor_unconfirmed():
+    """Plant edits invalidate motor confirmation; phase must revisit motor even with a draft spec."""
+    job = _job()
+    job.motor_dict = {"name": "m", "params": {"J": 0.01}}
+    job.motor_confirmed = True
+    job.spec_dict = {"raw_spec": "x", "hard_constraints": {}}
+    job.spec_confirmed = True
+    assert compute_phase(job) == PHASE_CONTROLLER_SELECTION
+
+    job.motor_confirmed = False
+    job.spec_confirmed = False
+    assert compute_phase(job) == PHASE_MOTOR_NEGOTIATION
+
+
 def test_workspace_only_includes_present_artifacts():
     job = _job()
     ws = build_workspace(job)

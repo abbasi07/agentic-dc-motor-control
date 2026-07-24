@@ -1,6 +1,9 @@
 # Continuity prompt — paste into a new chat
 
-> **Status (2026-07-23) — Phase E3 (React/Next two-pane UI) FIRST CUT DONE.** New `web/`
+> **Status (2026-07-23) — Phase E3 (React/Next two-pane UI) FIRST CUT DONE.** Streamlit UI
+> removed (`saas/ui_streamlit.py` deleted; `streamlit` dropped from deps). Primary UI is
+> `web/` (React/Next). Chat renders Markdown + KaTeX via `react-markdown` / `remark-math` /
+> `rehype-katex`. New `web/`
 > Next.js 14 (App Router) + TypeScript + Tailwind app, added as the `web` service in
 > docker-compose (port 3000; `npm install && npm run dev`; browser talks to the host-
 > published API, `NEXT_PUBLIC_API_BASE`/`NEXT_PUBLIC_COPILOT_API_KEY` injected). **Two-pane
@@ -261,7 +264,8 @@ do NOT polish into a final UI; React later). E is next.
 - Do NOT re-add Lab_*.ipynb without explicit request.
 
 ## How to run / test
-UI:    uv run streamlit run saas/ui_streamlit.py   -> http://localhost:8501
+UI:    docker compose up   # web http://localhost:3000 + API :8000
+       # or: cd web && npm run dev  (against a running API)
 API:   uv run uvicorn saas.api:app --port 8000     (/docs = Swagger only, not the GUI)
 Tests: uv sync --group dev && uv run pytest -q
 

@@ -66,3 +66,25 @@ def test_check_feasibility_from_spec():
     report = check_feasibility(CTMS_PARAMS, spec)
     assert report.feasible
     assert "omega_max_rad_s" in report.characteristics
+
+
+def test_check_feasibility_prefers_explicit_plant_v_max():
+    # Spec still has the old ±12 default, but the plant is a 20 V supply.
+    # Characteristics / reachability must use the plant budget.
+    from dc_motor.motor_model import MotorParams
+
+    params = MotorParams(J=0.01, b=1e-4, K=0.1, R=30.0, L=0.001)
+    spec = validate_and_clamp_design_spec(
+        DesignSpec(
+            raw_spec="settle under 1s",
+            hard_constraints={"settling_time_s": ("<=", 1.0)},
+            required_scenarios=["step_1rads"],
+            omega_ref=1.0,
+            V_min=-12.0,
+            V_max=12.0,
+            source="manual",
+        )
+    )
+    report = check_feasibility(params, spec, V_max=20.0)
+    # dc_gain = K/(bR+K^2) = 0.1/(0.003+0.01)=7.6923…; *20 ≈ 153.85
+    assert abs(report.characteristics["omega_max_rad_s"] - 153.846) < 0.01

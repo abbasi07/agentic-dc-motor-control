@@ -56,13 +56,11 @@ npm run dev   # http://localhost:3000
 
 Hybrid chat + locked DesignSpec panel + results/export. Tools compute metrics; chat only plans and explains.
 
-```powershell
-# UI (primary)
-uv run streamlit run saas/ui_streamlit.py
-# → http://localhost:8501
+The primary UI is the **React/Next app** (`web/`, http://localhost:3000). For API-only local development:
 
-# Optional API (Swagger at /docs is NOT the GUI)
+```powershell
 uv run uvicorn saas.api:app --host 127.0.0.1 --port 8000
+# → Swagger at http://127.0.0.1:8000/docs
 ```
 
 Job flow: create job → interpret NL → clarify if needed → confirm & design → feedback/rerun → export zip (certification gate).
@@ -84,7 +82,7 @@ type, and ask follow-ups like *"what was the settling time?"* in one conversatio
 | `dc_motor/` | Plant, controllers, **state-space model**, metrics, scenarios, eval, specs, `FailureDigest`, **plant registry** |
 | `agents/` | Spec agent, PID tuner, orchestrator, **controller registry**, specialist designers, advanced controllers, **critic**, certification / export |
 | `experiments/` | Ablation suite (`run_ablation`, comparison table) |
-| `saas/` | FastAPI jobs API + persistence/queue/events/auth + Streamlit (frozen) |
+| `saas/` | FastAPI jobs API + persistence/queue/events/auth |
 | `web/` | React/Next two-pane UI (E3): chat + live activity, dynamic artifact tabs |
 | `examples/` | Runnable CLI demos (`lab_01` … `lab_08`) |
 | `tests/` | Smoke / unit tests (mocked Spec Interpreter; no OpenAI required) |
@@ -147,4 +145,4 @@ uv run pytest -q
 
 ## Dependencies
 
-Managed in `pyproject.toml` via [uv](https://docs.astral.sh/uv/). Runtime: `numpy`, `scipy`, `control` (python-control, for LQR/LQG/Kalman), `cvxpy` + `osqp` (constrained MPC QP), `matplotlib`, `openai`, `python-dotenv`, `fastapi`, `uvicorn`, `streamlit`. Dev: `pytest`, `httpx`.
+Managed in `pyproject.toml` via [uv](https://docs.astral.sh/uv/). Runtime: `numpy`, `scipy`, `control` (python-control, for LQR/LQG/Kalman), `cvxpy` + `osqp` (constrained MPC QP), `matplotlib`, `openai`, `python-dotenv`, `fastapi`, `uvicorn`. Dev: `pytest`, `httpx`. Frontend (`web/`): Next.js, React, `react-markdown` + KaTeX.
